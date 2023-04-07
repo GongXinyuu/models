@@ -1,4 +1,4 @@
-# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ tf.train.Checkpoint for object based saving and loading and tf.saved_model.save
 for graph serializaiton.
 """
 import math
-from typing import Any, List
+from typing import Any, List, Dict
 
 import tensorflow as tf
 
@@ -95,7 +95,7 @@ def position_embedding_sine(attention_mask,
   return embeddings
 
 
-def postprocess(outputs: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
+def postprocess(outputs: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
   """Performs post-processing on model output.
 
   Args:
