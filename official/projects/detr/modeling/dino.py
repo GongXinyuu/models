@@ -157,7 +157,10 @@ class DINO(tf.keras.Model):
                num_decoder_layers=6,
                dropout_rate=0.1,
                query_dim=4,
+               keep_query_pos=False,
+               query_scale_type='cond_elewise',
                num_patterns=0,
+               modulate_hw_attn=True,
                bbox_embed_diff_each_layer=False,
                random_refpoints_xy=False,
                **kwargs):
@@ -171,7 +174,10 @@ class DINO(tf.keras.Model):
     self._num_decoder_layers = num_decoder_layers
     self._dropout_rate = dropout_rate
     self._query_dim = query_dim
+    self._keep_query_pos = keep_query_pos
+    self._query_scale_type = query_scale_type
     self._num_patterns = num_patterns
+    self._modulate_hw_attn = modulate_hw_attn
     self._bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
     self._random_refpoints_xy = random_refpoints_xy
     if hidden_size % 2 != 0:
@@ -181,7 +187,7 @@ class DINO(tf.keras.Model):
 
   def build(self, input_shape=None):
     self._input_proj = tf.keras.layers.Conv2D(
-        self._hidden_size, 1, name="detr/conv2d")
+        self._hidden_size, 1, name="dino/conv2d")
     self._build_detection_decoder()
     super().build(input_shape)
 
@@ -192,11 +198,14 @@ class DINO(tf.keras.Model):
         num_decoder_layers=self._num_decoder_layers,
         dropout_rate=self._dropout_rate,
         query_dim=self._query_dim,
+        keep_query_pos=self._keep_query_pos,
+        query_scale_type=self._query_scale_type,
         num_patterns=self._num_patterns,
+        modulate_hw_attn=self._modulate_hw_attn,
         bbox_embed_diff_each_layer=self._bbox_embed_diff_each_layer)
 
     self.refpoint_embed = self.add_weight(
-      "detr/refpoint_embeddings",
+      "dino/refpoint_embeddings",
       shape=[self._num_queries, self._query_dim],
       initializer=refpoint_initializer if self._random_refpoints_xy else None,
       dtype=tf.float32
@@ -206,7 +215,7 @@ class DINO(tf.keras.Model):
     self._class_embed = tf.keras.layers.Dense(
         self._num_classes,
         kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
-        name="detr/cls_dense")
+        name="dino/cls_dense")
 
     self._sigmoid = tf.keras.layers.Activation("sigmoid")
 
