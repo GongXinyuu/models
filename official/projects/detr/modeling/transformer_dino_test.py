@@ -16,7 +16,6 @@
 
 import tensorflow as tf
 
-from official.projects.detr.modeling import transformer
 from official.projects.detr.modeling import transformer_dino
 
 
@@ -50,6 +49,51 @@ class TransformerTest(tf.test.TestCase):
     ], is_first=is_first)
     self.assertAllEqual(
         tf.shape(out), (batch_size, sequence_length, feature_size))
+
+  def test_transformer_dino_decoder_block_get_config(self):
+    num_attention_heads = 2
+    intermediate_size = 256
+    intermediate_activation = 'relu'
+    model = transformer_dino.TransformerDecoderBlock(num_attention_heads,
+                                                intermediate_size,
+                                                intermediate_activation)
+    config = model.get_config()
+    expected_config = {
+        'name': 'transformer_decoder_block',
+        'trainable': True,
+        'dtype': 'float32',
+        'num_attention_heads': 2,
+        'intermediate_size': 256,
+        'intermediate_activation': 'relu',
+        'dropout_rate': 0.0,
+        'attention_dropout_rate': 0.0,
+        'kernel_initializer': {
+            'class_name': 'GlorotUniform',
+            'config': {
+                'seed': None
+            }
+        },
+        'bias_initializer': {
+            'class_name': 'Zeros',
+            'config': {}
+        },
+        'kernel_regularizer': None,
+        'bias_regularizer': None,
+        'activity_regularizer': None,
+        'kernel_constraint': None,
+        'bias_constraint': None,
+        'use_bias': True,
+        'norm_epsilon': 1e-12,
+        'intermediate_dropout': 0.0,
+        'attention_initializer': {
+            'class_name': 'GlorotUniform',
+            'config': {
+                'seed': None
+            }
+        },
+      "keep_query_pos": False,
+    }
+    self.assertAllEqual(expected_config, config)
 
   def test_transformer_dino_decoder(self):
     batch_size = 2
@@ -96,6 +140,40 @@ class TransformerTest(tf.test.TestCase):
       self.assertAllEqual(
           tf.shape(out), (batch_size, sequence_length, feature_size))
 
+    for out in ref_points:
+      self.assertAllEqual(
+          tf.shape(out), (batch_size, sequence_length, query_dim))
+
+  def test_transformer_dino_decoder_get_config(self):
+    num_layers = 2
+    num_attention_heads = 2
+    intermediate_size = 256
+    model = transformer_dino.TransformerDecoder(
+        num_layers=num_layers,
+        num_attention_heads=num_attention_heads,
+        intermediate_size=intermediate_size)
+    config = model.get_config()
+    expected_config = {
+        'name': 'transformer_decoder',
+        'trainable': True,
+        'dtype': 'float32',
+        'num_layers': 2,
+        'num_attention_heads': 2,
+        "query_dim": 4,
+        "keep_query_pos": False,
+        "query_scale_type": 'cond_elewise',
+        "modulate_hw_attn": True,
+        "bbox_embed_diff_each_layer": False,
+        "iter_update": True,
+        'intermediate_size': 256,
+        'activation': 'relu',
+        'dropout_rate': 0.0,
+        'attention_dropout_rate': 0.0,
+        'use_bias': False,
+        'norm_epsilon': 1e-06,
+        'intermediate_dropout': 0.0
+    }
+    self.assertAllEqual(expected_config, config)
 
 if __name__ == '__main__':
   tf.test.main()

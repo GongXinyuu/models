@@ -26,6 +26,7 @@ import tensorflow as tf
 
 from official.modeling import tf_utils
 from official.projects.detr.modeling import transformer_dino
+from official.projects.detr.modeling import transformer
 from official.vision.ops import box_ops
 
 
@@ -322,7 +323,7 @@ class DINOTransformer(tf.keras.layers.Layer):
     hidden_size = pos_embed_tensor_shape[2]
     self._hidden_size = hidden_size
     if self._num_encoder_layers > 0:
-      self._encoder = transformer_dino.TransformerEncoder(
+      self._encoder = transformer.TransformerEncoder(
           attention_dropout_rate=self._dropout_rate,
           dropout_rate=self._dropout_rate,
           intermediate_dropout=self._dropout_rate,
