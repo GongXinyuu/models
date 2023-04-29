@@ -12,28 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""DETR detection task definition."""
-from typing import Optional
-
-from absl import logging
+"""DINO detection task definition."""
 import tensorflow as tf
 
-from official.common import dataset_fn
-from official.core import base_task
 from official.core import task_factory
 from official.projects.detr.configs import dino as dino_cfg
-from official.projects.detr.dataloaders import coco
-from official.projects.detr.dataloaders import detr_input
 from official.projects.detr.modeling import dino
 from official.projects.detr.ops import matchers
 from official.projects.detr.tasks import detection
-from official.vision.dataloaders import input_reader_factory
-from official.vision.dataloaders import tf_example_decoder
-from official.vision.dataloaders import tfds_factory
-from official.vision.dataloaders import tf_example_label_map_decoder
-from official.vision.evaluation import coco_evaluator
 from official.vision.modeling import backbones
 from official.vision.ops import box_ops
+
+
+def focal_loss(logits, labels, alpha=0.25, gamma=2.0):
+  softmax_prob = tf.nn.softmax(logits, axis=-1)
+  onehot_labels = tf.one_hot(labels, depth=tf.shape(softmax_prob)[-1])
+  ce_loss = -tf.reduce_sum(onehot_labels * tf.math.log(softmax_prob + 1e-8), axis=-1)
+  ce_loss = alpha * tf.pow(1 - softmax_prob, gamma) * ce_loss
+  return tf.reduce_mean(ce_loss)
 
 
 @task_factory.register_task_cls(dino_cfg.DinoTask)
@@ -73,3 +69,56 @@ class DINOTask(detection.DetectionTask):
                       random_refpoints_xy=self._task_config.model.random_refpoints_xy)
     return model
 
+  def build_losses(self, outputs, labels, aux_losses=None):
+    """Builds DINO losses."""
+    cls_outputs = outputs['cls_outputs']
+    box_outputs = outputs['box_outputs']
+    cls_targets = labels['classes']
+    box_targets = labels['boxes']
+
+    cost = self._compute_cost(
+        cls_outputs, box_outputs, cls_targets, box_targets)
+
+    _, indices = matchers.hungarian_matching(cost)
+    indices = tf.stop_gradient(indices)
+
+    target_index = tf.math.argmax(indices, axis=1)
+    cls_assigned = tf.gather(cls_outputs, target_index, batch_dims=1, axis=1)
+    box_assigned = tf.gather(box_outputs, target_index, batch_dims=1, axis=1)
+
+    background = tf.equal(cls_targets, 0)
+    num_boxes = tf.reduce_sum(
+        tf.cast(tf.logical_not(background), tf.float32), axis=-1)
+
+    # Box loss is only calculated on non-background class.
+    l_1 = tf.reduce_sum(tf.abs(box_assigned - box_targets), axis=-1)
+    box_loss = self._task_config.losses.lambda_box * tf.where(
+        background, tf.zeros_like(l_1), l_1)
+
+    # Giou loss is only calculated on non-background class.
+    giou = tf.linalg.diag_part(1.0 - box_ops.bbox_generalized_overlap(
+        box_ops.cycxhw_to_yxyx(box_assigned),
+        box_ops.cycxhw_to_yxyx(box_targets)
+        ))
+    giou_loss = self._task_config.losses.lambda_giou * tf.where(
+        background, tf.zeros_like(giou), giou)
+
+    # Consider doing all reduce once in train_step to speed up.
+    num_boxes_per_replica = tf.reduce_sum(num_boxes)
+    replica_context = tf.distribute.get_replica_context()
+    num_boxes_sum = replica_context.all_reduce(
+        tf.distribute.ReduceOp.SUM,
+        num_boxes_per_replica)
+
+    # focal loss for class imbalance.
+    cls_loss = self._task_config.losses.lambda_cls * focal_loss(
+      cls_assigned, cls_targets, alpha=self._task_config.losses.focal_loss_alpha, gamma=self._task_config.losses.focal_loss_gamma)
+    box_loss = tf.math.divide_no_nan(
+        tf.reduce_sum(box_loss), num_boxes_sum)
+    giou_loss = tf.math.divide_no_nan(
+        tf.reduce_sum(giou_loss), num_boxes_sum)
+
+    aux_losses = tf.add_n(aux_losses) if aux_losses else 0.0
+
+    total_loss = cls_loss + box_loss + giou_loss + aux_losses
+    return total_loss, cls_loss, box_loss, giou_loss
