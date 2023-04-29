@@ -21,7 +21,7 @@ import tensorflow_datasets as tfds
 from official.projects.detr import optimization
 from official.projects.detr.configs import dino as dino_cfg
 from official.projects.detr.dataloaders import coco
-from official.projects.detr.tasks import detection
+from official.projects.detr.tasks import dino as detection
 from official.vision.configs import backbones
 
 
@@ -56,7 +56,7 @@ def _as_dataset(self, *args, **kwargs):
   )
 
 
-class DetectionTest(tf.test.TestCase):
+class DinoTest(tf.test.TestCase):
 
   def test_train_step(self):
     config = dino_cfg.DinoTask(
@@ -76,7 +76,7 @@ class DetectionTest(tf.test.TestCase):
             global_batch_size=2,
         ))
     with tfds.testing.mock_data(as_dataset_fn=_as_dataset):
-      task = detection.DetectionTask(config)
+      task = detection.DINOTask(config)
       model = task.build_model()
       dataset = task.build_inputs(config.train_data)
       iterator = iter(dataset)
@@ -96,7 +96,7 @@ class DetectionTest(tf.test.TestCase):
               }
           },
       })
-      optimizer = detection.DetectionTask.create_optimizer(opt_cfg)
+      optimizer = detection.DINOTask.create_optimizer(opt_cfg)
       task.train_step(next(iterator), model, optimizer)
 
   def test_validation_step(self):
@@ -118,7 +118,7 @@ class DetectionTest(tf.test.TestCase):
         ))
 
     with tfds.testing.mock_data(as_dataset_fn=_as_dataset):
-      task = detection.DetectionTask(config)
+      task = detection.DINOTask(config)
       model = task.build_model()
       metrics = task.build_metrics(training=False)
       dataset = task.build_inputs(config.validation_data)
@@ -148,7 +148,7 @@ class DetectionTFDSTest(tf.test.TestCase):
             global_batch_size=2,
         ))
     with tfds.testing.mock_data(as_dataset_fn=_as_dataset):
-      task = detection.DetectionTask(config)
+      task = detection.DINOTask(config)
       model = task.build_model()
       dataset = task.build_inputs(config.train_data)
       iterator = iter(dataset)
@@ -168,7 +168,7 @@ class DetectionTFDSTest(tf.test.TestCase):
               }
           },
       })
-      optimizer = detection.DetectionTask.create_optimizer(opt_cfg)
+      optimizer = detection.DINOTask.create_optimizer(opt_cfg)
       task.train_step(next(iterator), model, optimizer)
 
   def test_validation_step(self):
@@ -190,7 +190,7 @@ class DetectionTFDSTest(tf.test.TestCase):
         ))
 
     with tfds.testing.mock_data(as_dataset_fn=_as_dataset):
-      task = detection.DetectionTask(config)
+      task = detection.DINOTask(config)
       model = task.build_model()
       metrics = task.build_metrics(training=False)
       dataset = task.build_inputs(config.validation_data)
