@@ -26,7 +26,9 @@ from official.core import train_utils
 from official.modeling import performance
 # pylint: disable=unused-import
 from official.projects.detr.configs import detr
+from official.projects.detr.configs import dino
 from official.projects.detr.tasks import detection
+from official.projects.detr.tasks import dino as dino_task
 # pylint: enable=unused-import
 
 FLAGS = flags.FLAGS

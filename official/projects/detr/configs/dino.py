@@ -72,6 +72,7 @@ class Dino(hyperparams.Config):
   modulate_hw_attn: bool = True
   bbox_embed_diff_each_layer: bool = False
   random_refpoints_xy: bool = False
+  dropout_rate: int = 0.1
 
 @dataclasses.dataclass
 class DinoTask(cfg.TaskConfig):
