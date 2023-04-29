@@ -28,7 +28,7 @@ def focal_loss(logits, labels, alpha=0.25, gamma=2.0):
   softmax_prob = tf.nn.softmax(logits, axis=-1)
   onehot_labels = tf.one_hot(labels, depth=tf.shape(softmax_prob)[-1])
   ce_loss = -tf.reduce_sum(onehot_labels * tf.math.log(softmax_prob + 1e-8), axis=-1)
-  ce_loss = alpha * tf.pow(1 - softmax_prob, gamma) * ce_loss
+  ce_loss = alpha * tf.pow(1 - softmax_prob, gamma) * tf.expand_dims(ce_loss, -1)
   return tf.reduce_mean(ce_loss)
 
 
