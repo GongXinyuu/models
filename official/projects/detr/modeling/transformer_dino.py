@@ -692,8 +692,13 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     k_content = self.ca_kcontent_proj(memory)
     v = self.ca_v_proj(memory)
 
-    bs, num_queries, n_model = q_content.shape
-    _, hw, _ = k_content.shape
+    # bs, num_queries, n_model = tf.shape(q_content)
+    q_content_shape = tf.shape(q_content)
+    bs = q_content_shape[0]
+    num_queries = q_content_shape[1]
+    n_model = q_content_shape[2]
+
+    hw= tf.shape(k_content)[1]
 
     k_pos = self.ca_kpos_proj(memory_pos_embed)
 
