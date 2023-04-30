@@ -57,7 +57,7 @@ class Losses(hyperparams.Config):
 @dataclasses.dataclass
 class Dino(hyperparams.Config):
   """Dino model definations."""
-  num_queries: int = 100
+  num_queries: int = 300
   hidden_size: int = 256
   num_classes: int = 91  # 0: background
   num_encoder_layers: int = 6

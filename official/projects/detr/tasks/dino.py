@@ -71,10 +71,12 @@ class DINOTask(detection.DetectionTask):
 
   def build_losses(self, outputs, labels, aux_losses=None):
     """Builds DINO losses."""
-    cls_outputs = outputs['cls_outputs']
+    cls_outputs = outputs['cls_outputs']  # bs, num_queries, num_classes
     box_outputs = outputs['box_outputs']
     cls_targets = labels['classes']
     box_targets = labels['boxes']
+
+    num_queries = tf.shape(cls_outputs)[1]
 
     cost = self._compute_cost(
         cls_outputs, box_outputs, cls_targets, box_targets)
@@ -112,7 +114,7 @@ class DINOTask(detection.DetectionTask):
 
     # focal loss for class imbalance.
     cls_loss = tf.math.divide_no_nan(
-      self._task_config.losses.lambda_cls * focal_loss(
+      num_queries * self._task_config.losses.lambda_cls * focal_loss(
       cls_assigned, cls_targets, alpha=self._task_config.losses.focal_alpha, gamma=self._task_config.losses.focal_gamma),
       num_boxes_sum)
     box_loss = tf.math.divide_no_nan(
