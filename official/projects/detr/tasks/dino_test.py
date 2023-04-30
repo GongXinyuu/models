@@ -74,6 +74,7 @@ class DinoTest(tf.test.TestCase):
             tfds_split='validation',
             is_training=True,
             global_batch_size=2,
+            max_num_boxes=300,
         ))
     with tfds.testing.mock_data(as_dataset_fn=_as_dataset):
       task = detection.DINOTask(config)
@@ -115,6 +116,7 @@ class DinoTest(tf.test.TestCase):
             tfds_split='validation',
             is_training=False,
             global_batch_size=2,
+            max_num_boxes=300,
         ))
 
     with tfds.testing.mock_data(as_dataset_fn=_as_dataset):

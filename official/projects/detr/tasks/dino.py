@@ -76,11 +76,12 @@ class DINOTask(detection.DetectionTask):
     cls_targets = labels['classes']
     box_targets = labels['boxes']
 
-    num_queries = tf.shape(cls_outputs)[1]
+    num_queries = tf.cast(tf.shape(cls_outputs)[1], tf.float32)
 
     cost = self._compute_cost(
         cls_outputs, box_outputs, cls_targets, box_targets)
 
+    # Hungarian matching.
     _, indices = matchers.hungarian_matching(cost)
     indices = tf.stop_gradient(indices)
 
