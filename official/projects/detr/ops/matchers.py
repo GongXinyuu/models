@@ -28,6 +28,7 @@ Based on the original implementation by Jiquan Ngiam <jngiam@google.com>.
 """
 import tensorflow as tf
 from official.modeling import tf_utils
+from scipy.optimize import linear_sum_assignment
 
 
 def _prepare(weights):
@@ -448,42 +449,26 @@ def assert_rank(tensor, expected_rank, name=None):
 
 
 def hungarian_matching(weights):
-  """Computes the minimum linear sum assignment using the Hungarian algorithm.
+  def hungarian_assignment_cpu(weights_cpu):
+    row_indices, col_indices = linear_sum_assignment(weights_cpu)
+    return row_indices, col_indices
 
-  Args:
-    weights: A float32 [batch_size, num_elems, num_elems] tensor, where each
-      inner matrix represents weights to be use for matching.
-
-  Returns:
-    A bool [batch_size, num_elems, num_elems] tensor, where each element of the
-    inner matrix represents whether the worker has been matched to the job.
-    The returned matching will always be a perfect match.
-  """
   batch_size, num_elems, _ = tf_utils.get_shape_list(weights, 3)
+  assignment_list = []
 
-  weights = _prepare(weights)
-  adj_matrix = tf.equal(weights, 0.)
-  state, assignment = _maximum_bipartite_matching(adj_matrix)
-  workers_cover, jobs_cover = _compute_cover(state, assignment)
+  for batch_item_weights in tf.unstack(weights):
+    row_idx, col_idx = tf.py_function(
+      func=hungarian_assignment_cpu,
+      inp=[batch_item_weights],
+      Tout=[tf.int64, tf.int64])
 
-  def _cover_incomplete(workers_cover, jobs_cover, *args):
-    del args
-    cover_sum = (
-        tf.reduce_sum(tf.cast(workers_cover, tf.int32)) +
-        tf.reduce_sum(tf.cast(jobs_cover, tf.int32)))
-    return tf.less(cover_sum, batch_size * num_elems)
+    # Create the assignment matrix for the current batch item
+    assignment_matrix = tf.scatter_nd(
+      tf.stack([row_idx, col_idx], axis=-1),
+      tf.ones_like(row_idx, dtype=tf.bool),
+      shape=(num_elems, num_elems))
+    assignment_list.append(assignment_matrix)
 
-  def _update_weights_and_match(workers_cover, jobs_cover, weights, assignment):
-    weights = _update_weights_using_cover(workers_cover, jobs_cover, weights)
-    adj_matrix = tf.equal(weights, 0.)
-    state, assignment = _maximum_bipartite_matching(adj_matrix, assignment)
-    workers_cover, jobs_cover = _compute_cover(state, assignment)
-    return workers_cover, jobs_cover, weights, assignment
-
-  workers_cover, jobs_cover, weights, assignment = tf.while_loop(
-      _cover_incomplete,
-      _update_weights_and_match,
-      (workers_cover, jobs_cover, weights, assignment),
-      back_prop=False)
+  assignment = tf.stack(assignment_list)
   return weights, assignment
 
