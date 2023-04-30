@@ -134,7 +134,7 @@ def dino_coco() -> cfg.ExperimentConfig:
           steps_per_loop=1000,
           summary_interval=1000,
           checkpoint_interval=1000,
-          validation_interval=1000,
+          validation_interval=5000,
           max_to_keep=1,
           best_checkpoint_export_subdir='best_ckpt',
           best_checkpoint_eval_metric='AP',
