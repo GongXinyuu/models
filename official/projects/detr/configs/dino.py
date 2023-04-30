@@ -40,6 +40,7 @@ class DataConfig(cfg.DataConfig):
   shuffle_buffer_size: int = 10000
   file_type: str = 'tfrecord'
   drop_remainder: bool = True
+  max_num_boxes = 300
 
 
 @dataclasses.dataclass
@@ -117,6 +118,7 @@ def dino_coco() -> cfg.ExperimentConfig:
               tfds_split='train',
               is_training=True,
               global_batch_size=train_batch_size,
+              max_num_boxes=300,
               shuffle_buffer_size=1000,
           ),
           validation_data=coco.COCODataConfig(
@@ -124,6 +126,7 @@ def dino_coco() -> cfg.ExperimentConfig:
               tfds_split='validation',
               is_training=False,
               global_batch_size=eval_batch_size,
+              max_num_boxes=300,
               drop_remainder=False)),
       trainer=cfg.TrainerConfig(
           train_steps=train_steps,

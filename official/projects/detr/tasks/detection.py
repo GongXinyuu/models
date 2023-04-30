@@ -112,6 +112,7 @@ class DetectionTask(base_task.Task):
       parser = detr_input.Parser(
           class_offset=self._task_config.losses.class_offset,
           output_size=self._task_config.model.input_size[:2],
+          max_num_boxes=self._task_config.model.num_queries,
       )
 
       reader = input_reader_factory.input_reader_generator(
