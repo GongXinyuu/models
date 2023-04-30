@@ -111,8 +111,10 @@ class DINOTask(detection.DetectionTask):
         num_boxes_per_replica)
 
     # focal loss for class imbalance.
-    cls_loss = self._task_config.losses.lambda_cls * focal_loss(
-      cls_assigned, cls_targets, alpha=self._task_config.losses.focal_alpha, gamma=self._task_config.losses.focal_gamma)
+    cls_loss = tf.math.divide_no_nan(
+      self._task_config.losses.lambda_cls * focal_loss(
+      cls_assigned, cls_targets, alpha=self._task_config.losses.focal_alpha, gamma=self._task_config.losses.focal_gamma),
+      num_boxes_sum)
     box_loss = tf.math.divide_no_nan(
         tf.reduce_sum(box_loss), num_boxes_sum)
     giou_loss = tf.math.divide_no_nan(
