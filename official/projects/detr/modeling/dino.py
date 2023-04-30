@@ -156,6 +156,7 @@ class DINO(tf.keras.Model):
                num_encoder_layers=6,
                num_decoder_layers=6,
                dropout_rate=0.1,
+               pe_temperature=20.0,
                query_dim=4,
                keep_query_pos=False,
                query_scale_type='cond_elewise',
@@ -173,6 +174,7 @@ class DINO(tf.keras.Model):
     self._num_encoder_layers = num_encoder_layers
     self._num_decoder_layers = num_decoder_layers
     self._dropout_rate = dropout_rate
+    self._pe_temperature = pe_temperature
     self._query_dim = query_dim
     self._keep_query_pos = keep_query_pos
     self._query_scale_type = query_scale_type
@@ -237,6 +239,14 @@ class DINO(tf.keras.Model):
         "num_encoder_layers": self._num_encoder_layers,
         "num_decoder_layers": self._num_decoder_layers,
         "dropout_rate": self._dropout_rate,
+        "pe_temperature": self._pe_temperature,
+        "query_dim": self._query_dim,
+        "keep_query_pos": self._keep_query_pos,
+        "query_scale_type": self._query_scale_type,
+        "num_patterns": self._num_patterns,
+        "modulate_hw_attn": self._modulate_hw_attn,
+        "bbox_embed_diff_each_layer": self._bbox_embed_diff_each_layer,
+        "random_refpoints_xy": self._random_refpoints_xy,
     }
 
   @classmethod
@@ -261,7 +271,7 @@ class DINO(tf.keras.Model):
     embedweight = tf.tile(tf.expand_dims(self.refpoint_embed, axis=0), (batch_size, 1, 1))
 
     pos_embed = position_embedding_sine(
-        mask[:, :, :, 0], num_pos_features=self._hidden_size)
+        mask[:, :, :, 0], num_pos_features=self._hidden_size, temperature=self._pe_temperature)
     pos_embed = tf.reshape(pos_embed, [batch_size, -1, self._hidden_size])
 
     features = tf.reshape(
