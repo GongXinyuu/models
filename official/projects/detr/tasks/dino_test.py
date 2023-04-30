@@ -134,8 +134,8 @@ class DetectionTFDSTest(tf.test.TestCase):
     config = dino_cfg.DinoTask(
         model=dino_cfg.Dino(
             input_size=[1333, 1333, 3],
-            num_encoder_layers=1,
-            num_decoder_layers=1,
+            num_encoder_layers=2,
+            num_decoder_layers=3,
             backbone=backbones.Backbone(
                 type='resnet',
                 resnet=backbones.ResNet(model_id=10, bn_trainable=False))
