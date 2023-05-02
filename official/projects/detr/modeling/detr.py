@@ -255,8 +255,8 @@ class DETR(tf.keras.Model):
         box_out = layer(box_out)
       output_coord = self._sigmoid(box_out)
       out = {"cls_outputs": output_class, "box_outputs": output_coord}
-      if not training:
-        out.update(postprocess(out))
+      # if not training:
+      #   out.update(postprocess(out))
       out_list.append(out)
 
     return out_list
