@@ -307,8 +307,8 @@ class DINO(tf.keras.Model):
         output_coord = self._sigmoid(tmp + reference_before_sigmoid)
 
       out = {"cls_outputs": output_class, "box_outputs": output_coord}
-      if not training:
-        out.update(postprocess(out))
+      # if not training:
+      #   out.update(postprocess(out))
       out_list.append(out)
 
     return out_list
