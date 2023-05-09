@@ -110,6 +110,13 @@ def refpoint_initializer(shape, dtype=None):
 
   return weights
 
+class FocalBiasInitializer(tf.keras.initializers.Initializer):
+  def __init__(self, prior_prob=0.01):
+    self.bias_value = -math.log((1 - prior_prob) / prior_prob)
+
+  def __call__(self, shape, dtype=None):
+    return tf.ones(shape, dtype=dtype) * self.bias_value
+
 
 def postprocess(outputs: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
   """Performs post-processing on model output.
@@ -217,6 +224,7 @@ class DINO(tf.keras.Model):
     self._class_embed = tf.keras.layers.Dense(
         self._num_classes,
         kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
+        bias_initializer=FocalBiasInitializer(prior_prob=0.01),
         name="dino/cls_dense")
 
     self._sigmoid = tf.keras.layers.Activation("sigmoid")
