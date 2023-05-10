@@ -26,6 +26,29 @@ from official.nlp.modeling import layers
 from official.nlp.modeling import models
 
 
+def refpoint_initializer(shape, dtype=None):
+  weights = tf.random.normal(shape, mean=0., stddev=1., dtype=dtype)
+
+  # Uniformly initialize the first two columns
+  weights[:, :2] = tf.random.uniform((shape[0], 2), minval=0, maxval=1, dtype=dtype)
+
+  # Apply inverse_sigmoid function
+  weights[:, :2] = inverse_sigmoid(weights[:, :2])
+
+  # Set the first two columns to not require gradient updates
+  weights[:, :2] = tf.stop_gradient(weights[:, :2])
+
+  return weights
+
+
+class FocalBiasInitializer(tf.keras.initializers.Initializer):
+  def __init__(self, prior_prob=0.01):
+    self.bias_value = -math.log((1 - prior_prob) / prior_prob)
+
+  def __call__(self, shape, dtype=None):
+    return tf.ones(shape, dtype=dtype) * self.bias_value
+
+
 def fanin_bias_initializer(shape, dtype=None):
   fan_in = shape[-1]
   bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0

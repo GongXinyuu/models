@@ -47,6 +47,7 @@ class DataConfig(cfg.DataConfig):
 class Losses(hyperparams.Config):
   class_offset: int = 0
   lambda_cls: float = 1.0
+  lambda_cls_cost: float = 2.0
   lambda_box: float = 5.0
   lambda_giou: float = 2.0
   background_cls_weight: float = 0.1

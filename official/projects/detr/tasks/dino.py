@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """DINO detection task definition."""
+from typing import List, Dict, Tuple, Union, Optional  # noqa
 import tensorflow as tf
 
 from official.core import task_factory
@@ -22,14 +23,7 @@ from official.projects.detr.ops import matchers
 from official.projects.detr.tasks import detection
 from official.vision.modeling import backbones
 from official.vision.ops import box_ops
-
-
-def focal_loss(logits, labels, alpha=0.25, gamma=2.0):
-  softmax_prob = tf.nn.softmax(logits, axis=-1)
-  onehot_labels = tf.one_hot(labels, depth=tf.shape(softmax_prob)[-1])
-  ce_loss = -tf.reduce_sum(onehot_labels * tf.math.log(softmax_prob + 1e-8), axis=-1)
-  ce_loss = alpha * tf.pow(1 - softmax_prob, gamma) * tf.expand_dims(ce_loss, -1)
-  return tf.reduce_mean(ce_loss)
+from official.vision.losses import focal_loss
 
 
 @task_factory.register_task_cls(dino_cfg.DinoTask)
@@ -40,6 +34,26 @@ class DINOTask(detection.DetectionTask):
   loading/iterating over Datasets, initializing the model, calculating the loss,
   post-processing, and customized metrics with reduction.
   """
+  def __init__(self,
+               params,
+               logging_dir: Optional[str] = None,
+               name: Optional[str] = None):
+    """Task initialization.
+
+    Args:
+      params: the task configuration instance, which can be any of dataclass,
+        ConfigDict, namedtuple, etc.
+      logging_dir: a string pointing to where the model, summaries etc. will be
+        saved. You can also write additional stuff in this directory.
+      name: the task name.
+    """
+    super().__init__(params=params, logging_dir=logging_dir, name=name)
+
+    self._cls_loss_fn = focal_loss.FocalLoss(
+      alpha=self._task_config.losses.focal_alpha,
+      gamma=self._task_config.losses.focal_gamma,
+      reduction=tf.keras.losses.Reduction.NONE,
+      name='cls_loss')
 
   def build_model(self):
     """Build DINO model."""
@@ -69,6 +83,48 @@ class DINOTask(detection.DetectionTask):
                       random_refpoints_xy=self._task_config.model.random_refpoints_xy)
     return model
 
+  def _compute_cost(self, cls_outputs, box_outputs, cls_targets, box_targets):
+    # Approximate classification cost with 1 - prob[target class].
+    # The 1 is a constant that doesn't change the matching, it can be ommitted.
+    # background: 0
+    out_prob = tf.sigmoid(cls_outputs)
+    neg_cost_class = (1 - self._task_config.losses.focal_alpha) * (out_prob ** self._task_config.losses.focal_gamma) \
+                     * (-tf.math.log(1 - out_prob + 1e-8))
+    pos_cost_class = self._task_config.losses.focal_alpha * ((1 - out_prob) ** self._task_config.losses.focal_gamma) \
+                     * (-tf.math.log(out_prob + 1e-8))
+    cls_cost = self._task_config.losses.lambda_cls_cost * \
+               (tf.gather(pos_cost_class, cls_targets, batch_dims=1, axis=-1) - tf.gather(neg_cost_class, cls_targets, batch_dims=1, axis=-1))
+
+    # Compute the L1 cost between boxes,
+    paired_differences = self._task_config.losses.lambda_box * tf.abs(
+        tf.expand_dims(box_outputs, 2) - tf.expand_dims(box_targets, 1))
+    box_cost = tf.reduce_sum(paired_differences, axis=-1)
+
+    # Compute the giou cost betwen boxes
+    giou_cost = self._task_config.losses.lambda_giou * -box_ops.bbox_generalized_overlap(
+        box_ops.cycxhw_to_yxyx(box_outputs),
+        box_ops.cycxhw_to_yxyx(box_targets))
+
+    total_cost = cls_cost + box_cost + giou_cost
+
+    max_cost = (
+        self._task_config.losses.lambda_cls_cost * 0.0 +
+        self._task_config.losses.lambda_box * 4. +
+        self._task_config.losses.lambda_giou * 0.0)
+
+    # Set pads to large constant
+    valid = tf.expand_dims(
+        tf.cast(tf.not_equal(cls_targets, 0), dtype=total_cost.dtype), axis=1)
+    total_cost = (1 - valid) * max_cost + valid * total_cost
+
+    # Set inf of nan to large constant
+    total_cost = tf.where(
+        tf.logical_or(tf.math.is_nan(total_cost), tf.math.is_inf(total_cost)),
+        max_cost * tf.ones_like(total_cost, dtype=total_cost.dtype),
+        total_cost)
+
+    return total_cost
+
   def build_losses(self, outputs, labels, aux_losses=None):
     """Builds DINO losses."""
     cls_outputs = outputs['cls_outputs']  # bs, num_queries, num_classes
@@ -93,6 +149,10 @@ class DINOTask(detection.DetectionTask):
     num_boxes = tf.reduce_sum(
         tf.cast(tf.logical_not(background), tf.float32), axis=-1)
 
+    # focal loss for class imbalance.
+    cls_targets_one_hot = tf.one_hot(cls_targets, self._task_config.model.num_classes)
+    cls_loss = num_queries * self._task_config.losses.lambda_cls * self._cls_loss_fn(cls_targets_one_hot, cls_assigned)
+
     # Box loss is only calculated on non-background class.
     l_1 = tf.reduce_sum(tf.abs(box_assigned - box_targets), axis=-1)
     box_loss = self._task_config.losses.lambda_box * tf.where(
@@ -113,11 +173,8 @@ class DINOTask(detection.DetectionTask):
         tf.distribute.ReduceOp.SUM,
         num_boxes_per_replica)
 
-    # focal loss for class imbalance.
     cls_loss = tf.math.divide_no_nan(
-      num_queries * self._task_config.losses.lambda_cls * focal_loss(
-      cls_assigned, cls_targets, alpha=self._task_config.losses.focal_alpha, gamma=self._task_config.losses.focal_gamma),
-      num_boxes_sum)
+      tf.reduce_sum(cls_loss), num_boxes_sum)
     box_loss = tf.math.divide_no_nan(
         tf.reduce_sum(box_loss), num_boxes_sum)
     giou_loss = tf.math.divide_no_nan(

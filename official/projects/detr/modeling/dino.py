@@ -96,28 +96,6 @@ def position_embedding_sine(attention_mask,
   return embeddings
 
 
-def refpoint_initializer(shape, dtype=None):
-  weights = tf.random.normal(shape, mean=0., stddev=1., dtype=dtype)
-
-  # Uniformly initialize the first two columns
-  weights[:, :2] = tf.random.uniform((shape[0], 2), minval=0, maxval=1, dtype=dtype)
-
-  # Apply inverse_sigmoid function
-  weights[:, :2] = transformer_dino.inverse_sigmoid(weights[:, :2])
-
-  # Set the first two columns to not require gradient updates
-  weights[:, :2] = tf.stop_gradient(weights[:, :2])
-
-  return weights
-
-class FocalBiasInitializer(tf.keras.initializers.Initializer):
-  def __init__(self, prior_prob=0.01):
-    self.bias_value = -math.log((1 - prior_prob) / prior_prob)
-
-  def __call__(self, shape, dtype=None):
-    return tf.ones(shape, dtype=dtype) * self.bias_value
-
-
 def postprocess(outputs: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
   """Performs post-processing on model output.
 
@@ -216,7 +194,7 @@ class DINO(tf.keras.Model):
     self.refpoint_embed = self.add_weight(
       "dino/refpoint_embeddings",
       shape=[self._num_queries, self._query_dim],
-      initializer=refpoint_initializer if self._random_refpoints_xy else None,
+      initializer=transformer_dino.refpoint_initializer if self._random_refpoints_xy else None,
       dtype=tf.float32
     )
 
@@ -224,7 +202,7 @@ class DINO(tf.keras.Model):
     self._class_embed = tf.keras.layers.Dense(
         self._num_classes,
         kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
-        bias_initializer=FocalBiasInitializer(prior_prob=0.01),
+        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
         name="dino/cls_dense")
 
     self._sigmoid = tf.keras.layers.Activation("sigmoid")
