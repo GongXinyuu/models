@@ -42,18 +42,19 @@ def inverse_sigmoid(x, eps=1e-3):
 class BBoxEmbed(tf.keras.Model):
   def __init__(self, hidden_size, prefix: str="detr"):
     super(BBoxEmbed, self).__init__()
+    sqrt_k = math.sqrt(1.0 / hidden_size)
     self.dense_0 = tf.keras.layers.Dense(
       hidden_size, activation="relu",
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_0")
     self.dense_1 = tf.keras.layers.Dense(
       hidden_size, activation="relu",
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_1")
     self.dense_2 = tf.keras.layers.Dense(
-      4,  kernel_initializer=tf.keras.initializers.HeUniform(),
+      4,  kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_2")
 
@@ -114,7 +115,7 @@ class MLP(tf.keras.Model):
     super().__init__()
     self.num_layers = num_layers
     h = [hidden_dim] * (num_layers - 1)
-    self.layers_list = [tf.keras.layers.Dense(k,  kernel_initializer=tf.keras.initializers.HeUniform(),
+    self.layers_list = [tf.keras.layers.Dense(k,  kernel_initializer=tf.keras.initializers.RandomUniform(-math.sqrt(1.0 / n), math.sqrt(1.0 / n)),
       bias_initializer=fanin_bias_initializer) for n, k in zip([input_dim] + h, h + [output_dim])]
 
   def call(self, x):
@@ -469,10 +470,11 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         activity_regularizer=self._activity_regularizer,
         kernel_constraint=self._kernel_constraint,
         bias_constraint=self._bias_constraint)
+    sqrt_k = math.sqrt(1.0 / hidden_size)
     # Self attention.
     self.sa_qcontent_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -480,7 +482,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.sa_qpos_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -488,7 +490,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.sa_kcontent_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -496,7 +498,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.sa_kpos_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -504,7 +506,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.sa_v_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -529,7 +531,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     # Encoder-decoder attention.
     self.ca_qcontent_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -537,7 +539,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.ca_qpos_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -545,7 +547,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.ca_kcontent_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -553,7 +555,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.ca_kpos_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -561,7 +563,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.ca_v_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -569,7 +571,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     )
     self.ca_qpos_sine_proj = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -597,7 +599,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     # Feed-forward projection.
     self.intermediate_dense = tf.keras.layers.Dense(
       units=self.intermediate_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
@@ -609,7 +611,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         rate=self._intermediate_dropout)
     self.output_dense = tf.keras.layers.Dense(
       units=hidden_size,
-      kernel_initializer=tf.keras.initializers.HeUniform(),
+      kernel_initializer=tf.keras.initializers.RandomUniform(-math.sqrt(1.0 / self.intermediate_size), math.sqrt(1.0 / self.intermediate_size)),
       bias_initializer=fanin_bias_initializer,
       use_bias=True,
       activation=None,  # Linear activation (default)
