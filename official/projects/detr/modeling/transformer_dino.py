@@ -26,6 +26,12 @@ from official.nlp.modeling import layers
 from official.nlp.modeling import models
 
 
+def fanin_bias_initializer(shape, dtype=None):
+  fan_in = shape[-1]
+  bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+  return tf.keras.initializers.RandomUniform(-bound, bound)(shape, dtype)
+
+
 def inverse_sigmoid(x, eps=1e-3):
     x = tf.clip_by_value(x, clip_value_min=0, clip_value_max=1)
     x1 = tf.clip_by_value(x, clip_value_min=eps, clip_value_max=float('inf'))
@@ -36,17 +42,19 @@ def inverse_sigmoid(x, eps=1e-3):
 class BBoxEmbed(tf.keras.Model):
   def __init__(self, hidden_size, prefix: str="detr"):
     super(BBoxEmbed, self).__init__()
-    sqrt_k = 0.01
     self.dense_0 = tf.keras.layers.Dense(
       hidden_size, activation="relu",
-      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_0")
     self.dense_1 = tf.keras.layers.Dense(
       hidden_size, activation="relu",
-      kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_1")
     self.dense_2 = tf.keras.layers.Dense(
-      4, kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
+      4,  kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_2")
 
   def call(self, inputs):
@@ -106,8 +114,8 @@ class MLP(tf.keras.Model):
     super().__init__()
     self.num_layers = num_layers
     h = [hidden_dim] * (num_layers - 1)
-    sqrt_k = 0.01
-    self.layers_list = [tf.keras.layers.Dense(k, kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k)) for n, k in zip([input_dim] + h, h + [output_dim])]
+    self.layers_list = [tf.keras.layers.Dense(k,  kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer) for n, k in zip([input_dim] + h, h + [output_dim])]
 
   def call(self, x):
     for i, layer in enumerate(self.layers_list):
@@ -296,7 +304,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
     ref_points = [reference_points]
 
     for layer_idx in range(self.num_layers):
-      obj_center = reference_points[..., :self.query_dim]  # [batch_size, num_queries, 2]
+      obj_center = reference_points[..., :self.query_dim]  # [batch_size, num_queries, 4]
       # get sine embedding for the query vector
       query_sine_embed = gen_sineembed_for_position(obj_center)
       query_pos = self.ref_point_head(query_sine_embed)  # [batch_size, num_queries, hidden_size]
@@ -462,41 +470,46 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         kernel_constraint=self._kernel_constraint,
         bias_constraint=self._bias_constraint)
     # Self attention.
-    self.sa_qcontent_proj = tf.keras.layers.EinsumDense(
-        "abc,cd->abd",
-        output_shape=(None, hidden_size),
-        bias_axes="d",
-        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-        name="sa_qcontent_proj",
-        **common_kwargs)
-    self.sa_qpos_proj = tf.keras.layers.EinsumDense(
-        "abc,cd->abd",
-        output_shape=(None, hidden_size),
-        bias_axes="d",
-        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-        name="sa_qpos_proj",
-        **common_kwargs)
-    self.sa_kcontent_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    self.sa_qcontent_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
+      name="sa_qcontent_proj",
+    )
+    self.sa_qpos_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
+      name="sa_qpos_proj",
+    )
+    self.sa_kcontent_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="sa_kcontent_proj",
-      **common_kwargs)
-    self.sa_kpos_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.sa_kpos_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="sa_kpos_proj",
-      **common_kwargs)
-    self.sa_v_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.sa_v_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="sa_v_proj",
-      **common_kwargs)
+    )
     self.self_attention = layers.attention.CachedAttention(
         num_heads=self.num_attention_heads,
         key_dim=self.attention_head_size,
@@ -504,13 +517,6 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         use_bias=self._use_bias,
         kernel_initializer=self._attention_initializer,
         name="self_attention",
-        **common_kwargs)
-    self.self_attention_output_dense = tf.keras.layers.EinsumDense(
-        "abc,cd->abd",
-        output_shape=(None, hidden_size),
-        bias_axes="d",
-        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-        name="output",
         **common_kwargs)
     self.self_attention_dropout = tf.keras.layers.Dropout(
         rate=self.dropout_rate)
@@ -521,48 +527,54 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
             epsilon=self._norm_epsilon,
             dtype="float32"))
     # Encoder-decoder attention.
-    self.ca_qcontent_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    self.ca_qcontent_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="ca_qcontent_proj",
-      **common_kwargs)
-    self.ca_qpos_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.ca_qpos_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="ca_qpos_proj",
-      **common_kwargs)
-    self.ca_kcontent_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.ca_kcontent_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="ca_kcontent_proj",
-      **common_kwargs)
-    self.ca_kpos_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.ca_kpos_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="ca_kpos_proj",
-      **common_kwargs)
-    self.ca_v_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.ca_v_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="ca_v_proj",
-      **common_kwargs)
-    self.ca_qpos_sine_proj = tf.keras.layers.EinsumDense(
-      "abc,cd->abd",
-      output_shape=(None, hidden_size),
-      bias_axes="d",
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+    )
+    self.ca_qpos_sine_proj = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
       name="ca_qpos_sine_proj",
-      **common_kwargs)
+    )
     self.encdec_attention = self._cross_attention_cls(
         num_heads=self.num_attention_heads,
         key_dim=self.attention_head_size,
@@ -583,24 +595,26 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
             dtype="float32"))
 
     # Feed-forward projection.
-    self.intermediate_dense = tf.keras.layers.EinsumDense(
-        "abc,cd->abd",
-        output_shape=(None, self.intermediate_size),
-        bias_axes="d",
-        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-        name="intermediate",
-        **common_kwargs)
+    self.intermediate_dense = tf.keras.layers.Dense(
+      units=self.intermediate_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
+      name="intermediate",
+    )
     self.intermediate_activation_layer = tf.keras.layers.Activation(
         self.intermediate_activation)
     self._intermediate_dropout_layer = tf.keras.layers.Dropout(
         rate=self._intermediate_dropout)
-    self.output_dense = tf.keras.layers.EinsumDense(
-        "abc,cd->abd",
-        output_shape=(None, hidden_size),
-        bias_axes="d",
-        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-        name="output",
-        **common_kwargs)
+    self.output_dense = tf.keras.layers.Dense(
+      units=hidden_size,
+      kernel_initializer=tf.keras.initializers.HeUniform(),
+      bias_initializer=fanin_bias_initializer,
+      use_bias=True,
+      activation=None,  # Linear activation (default)
+      name="output",
+    )
     self.output_dropout = tf.keras.layers.Dropout(rate=self.dropout_rate)
     self.output_layer_norm = tf.keras.layers.LayerNormalization(
         name="output_layer_norm",
@@ -658,7 +672,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     ]
 
   def call(self, inputs, cache=None, decode_loop_step=None, is_first=False):
-    # input_tensor is tgt, input_pos_embed is query_pos.
+    # input_tensor is tgt, input_pos_embed is query_pos, memory_pos_embed is pos.
     input_tensor, memory, attention_mask, self_attention_mask, input_pos_embed, memory_pos_embed, query_sine_embed = inputs
     # shape: batch_size x num_queries x 256
 
@@ -679,10 +693,9 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         attention_mask=self_attention_mask,
         cache=cache,
         decode_loop_step=decode_loop_step)
-    self_attention_output = self.self_attention_dropout(self_attention_output)
 
     self_attention_output = self.self_attention_layer_norm(
-        input_tensor + self_attention_output)
+        input_tensor + self.self_attention_dropout(self_attention_output))
     # ========== End of Self-Attention =============
 
     # ========== Begin of Cross-Attention =============
