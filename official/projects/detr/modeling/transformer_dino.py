@@ -723,13 +723,13 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
       q = q_content
       k = k_content
 
-      q = tf.reshape(q, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
-      query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed)
-      query_sine_embed = tf.reshape(query_sine_embed, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
-      q = tf.reshape(tf.concat([q, query_sine_embed], axis=3), (bs, num_queries, n_model * 2))
-      k = tf.reshape(k, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
-      k_pos = tf.reshape(k_pos, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
-      k = tf.reshape(tf.concat([k, k_pos], axis=3), (bs, hw, n_model * 2))
+    q = tf.reshape(q, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
+    query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed)
+    query_sine_embed = tf.reshape(query_sine_embed, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
+    q = tf.reshape(tf.concat([q, query_sine_embed], axis=3), (bs, num_queries, n_model * 2))
+    k = tf.reshape(k, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
+    k_pos = tf.reshape(k_pos, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
+    k = tf.reshape(tf.concat([k, k_pos], axis=3), (bs, hw, n_model * 2))
 
     cross_attn_inputs = dict(
         query=q,
