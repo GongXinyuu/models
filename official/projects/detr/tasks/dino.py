@@ -152,8 +152,7 @@ class DINOTask(detection.DetectionTask):
     # focal loss for class imbalance.
     cls_targets_one_hot = tf.one_hot(cls_targets, self._task_config.model.num_classes)
     # cls_loss shape: [batch_size, num_queries, num_classes]
-    cls_loss = self._cls_loss_fn(cls_targets_one_hot, cls_assigned)
-    cls_loss = num_queries * self._task_config.losses.lambda_cls * tf.reduce_sum(tf.reduce_mean(cls_loss, axis=1))
+    cls_loss = self._task_config.losses.lambda_cls * tf.reduce_sum(self._cls_loss_fn(cls_targets_one_hot, cls_assigned))
 
     # Box loss is only calculated on non-background class.
     l_1 = tf.reduce_sum(tf.abs(box_assigned - box_targets), axis=-1)
