@@ -46,11 +46,13 @@ class DataConfig(cfg.DataConfig):
 class Losses(hyperparams.Config):
   class_offset: int = 0
   lambda_cls: float = 1.0
+  lambda_cls_cost: float = 2.0
   lambda_box: float = 5.0
   lambda_giou: float = 2.0
   background_cls_weight: float = 0.1
   l2_weight_decay: float = 1e-4
-
+  focal_alpha : float = 0.25
+  focal_gamma : float = 2.0
 
 @dataclasses.dataclass
 class Detr(hyperparams.Config):

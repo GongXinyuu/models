@@ -33,6 +33,7 @@ from official.vision.dataloaders import tf_example_label_map_decoder
 from official.vision.evaluation import coco_evaluator
 from official.vision.modeling import backbones
 from official.vision.ops import box_ops
+from official.vision.losses import focal_loss
 
 
 @task_factory.register_task_cls(detr_cfg.DetrTask)
@@ -43,6 +44,26 @@ class DetectionTask(base_task.Task):
   loading/iterating over Datasets, initializing the model, calculating the loss,
   post-processing, and customized metrics with reduction.
   """
+  def __init__(self,
+               params,
+               logging_dir: Optional[str] = None,
+               name: Optional[str] = None):
+    """Task initialization.
+
+    Args:
+      params: the task configuration instance, which can be any of dataclass,
+        ConfigDict, namedtuple, etc.
+      logging_dir: a string pointing to where the model, summaries etc. will be
+        saved. You can also write additional stuff in this directory.
+      name: the task name.
+    """
+    super().__init__(params=params, logging_dir=logging_dir, name=name)
+
+    self._cls_loss_fn = focal_loss.FocalLoss(
+      alpha=self._task_config.losses.focal_alpha,
+      gamma=self._task_config.losses.focal_gamma,
+      reduction=tf.keras.losses.Reduction.NONE,
+      name='cls_loss')
 
   def build_model(self):
     """Build DETR model."""
@@ -128,8 +149,13 @@ class DetectionTask(base_task.Task):
     # Approximate classification cost with 1 - prob[target class].
     # The 1 is a constant that doesn't change the matching, it can be ommitted.
     # background: 0
-    cls_cost = self._task_config.losses.lambda_cls * tf.gather(
-        -tf.nn.softmax(cls_outputs), cls_targets, batch_dims=1, axis=-1)
+    out_prob = tf.sigmoid(cls_outputs)
+    neg_cost_class = (1 - self._task_config.losses.focal_alpha) * (out_prob ** self._task_config.losses.focal_gamma) \
+                     * (-tf.math.log(1 - out_prob + 1e-8))
+    pos_cost_class = self._task_config.losses.focal_alpha * ((1 - out_prob) ** self._task_config.losses.focal_gamma) \
+                     * (-tf.math.log(out_prob + 1e-8))
+    cls_cost = self._task_config.losses.lambda_cls_cost * \
+               (tf.gather(pos_cost_class, cls_targets, batch_dims=1, axis=-1) - tf.gather(neg_cost_class, cls_targets, batch_dims=1, axis=-1))
 
     # Compute the L1 cost between boxes,
     paired_differences = self._task_config.losses.lambda_box * tf.abs(
@@ -144,7 +170,7 @@ class DetectionTask(base_task.Task):
     total_cost = cls_cost + box_cost + giou_cost
 
     max_cost = (
-        self._task_config.losses.lambda_cls * 0.0 +
+        self._task_config.losses.lambda_cls_cost * 0.0 +
         self._task_config.losses.lambda_box * 4. +
         self._task_config.losses.lambda_giou * 0.0)
 
@@ -182,16 +208,10 @@ class DetectionTask(base_task.Task):
     num_boxes = tf.reduce_sum(
         tf.cast(tf.logical_not(background), tf.float32), axis=-1)
 
-    # Down-weight background to account for class imbalance.
-    xentropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
-        labels=cls_targets, logits=cls_assigned)
-    cls_loss = self._task_config.losses.lambda_cls * tf.where(
-        background, self._task_config.losses.background_cls_weight * xentropy,
-        xentropy)
-    cls_weights = tf.where(
-        background,
-        self._task_config.losses.background_cls_weight * tf.ones_like(cls_loss),
-        tf.ones_like(cls_loss))
+    # focal loss for class imbalance.
+    cls_targets_one_hot = tf.one_hot(cls_targets, self._task_config.model.num_classes)
+    # cls_loss shape: [batch_size, num_queries, num_classes]
+    cls_loss = self._task_config.losses.lambda_cls * tf.reduce_sum(self._cls_loss_fn(cls_targets_one_hot, cls_assigned))
 
     # Box loss is only calculated on non-background class.
     l_1 = tf.reduce_sum(tf.abs(box_assigned - box_targets), axis=-1)
@@ -208,13 +228,13 @@ class DetectionTask(base_task.Task):
 
     # Consider doing all reduce once in train_step to speed up.
     num_boxes_per_replica = tf.reduce_sum(num_boxes)
-    cls_weights_per_replica = tf.reduce_sum(cls_weights)
     replica_context = tf.distribute.get_replica_context()
-    num_boxes_sum, cls_weights_sum = replica_context.all_reduce(
+    num_boxes_sum = replica_context.all_reduce(
         tf.distribute.ReduceOp.SUM,
-        [num_boxes_per_replica, cls_weights_per_replica])
+        num_boxes_per_replica)
+
     cls_loss = tf.math.divide_no_nan(
-        tf.reduce_sum(cls_loss), cls_weights_sum)
+      tf.reduce_sum(cls_loss), num_boxes_sum)
     box_loss = tf.math.divide_no_nan(
         tf.reduce_sum(box_loss), num_boxes_sum)
     giou_loss = tf.math.divide_no_nan(

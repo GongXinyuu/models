@@ -26,6 +26,7 @@ import tensorflow as tf
 
 from official.modeling import tf_utils
 from official.projects.detr.modeling import transformer
+from official.projects.detr.modeling import transformer_dino
 from official.vision.ops import box_ops
 
 
@@ -174,6 +175,7 @@ class DETR(tf.keras.Model):
     self._class_embed = tf.keras.layers.Dense(
         self._num_classes,
         kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
+        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
         name="detr/cls_dense")
     self._bbox_embed = [
         tf.keras.layers.Dense(
