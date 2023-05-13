@@ -281,15 +281,10 @@ class DINO(tf.keras.Model):
       if not self._bbox_embed_diff_each_layer:
         reference_before_sigmoid = transformer_dino.inverse_sigmoid(reference)
         tmp = self._bbox_embed(decoded)
-
-        # tmp[..., :self._query_dim] += reference_before_sigmoid, original implementation
-        # TODO: check if this is correct
         output_coord = self._sigmoid(tmp + reference_before_sigmoid)
       else:
         reference_before_sigmoid = transformer_dino.inverse_sigmoid(reference)
         tmp = self._bbox_embed[layer_idx](decoded)
-        # tmp[..., :self._query_dim] += reference_before_sigmoid
-        # TODO: check if this is correct
         output_coord = self._sigmoid(tmp + reference_before_sigmoid)
 
       out = {"cls_outputs": output_class, "box_outputs": output_coord}

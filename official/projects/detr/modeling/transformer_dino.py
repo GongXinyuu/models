@@ -358,24 +358,22 @@ class TransformerDecoder(tf.keras.layers.Layer):
       ]
       # Gets the cache for decoding.
       if cache is None:
-        output_tensor, _ = self.decoder_layers[layer_idx](transformer_inputs)
+        output_tensor, _ = self.decoder_layers[layer_idx](transformer_inputs, is_first=(layer_idx == 0))
       else:
         cache_layer_idx = str(layer_idx)
         output_tensor, cache[cache_layer_idx] = self.decoder_layers[layer_idx](
             transformer_inputs,
             cache=cache[cache_layer_idx],
-            decode_loop_step=decode_loop_step)
+            decode_loop_step=decode_loop_step,
+            is_first=(layer_idx == 0))
 
       if self.iter_update:
         if self.bbox_embed_diff_each_layer:
           tmp = self.bbox_embed[layer_idx](output_tensor)
         else:
-          tmp = self.bbox_embed(output_tensor)
-        tmp = tf.concat([
-          tmp[..., :self.query_dim] + inverse_sigmoid(reference_points),
-          tmp[..., self.query_dim:]
-        ], axis=-1)
-        new_reference_points = tf.sigmoid(tmp[..., :self.query_dim])
+          tmp = self.bbox_embed(output_tensor)  # bs, nq, 4
+        tmp = tmp + inverse_sigmoid(reference_points)
+        new_reference_points = tf.sigmoid(tmp)
         if layer_idx != self.num_layers - 1:
           ref_points.append(new_reference_points)
         reference_points = tf.stop_gradient(new_reference_points)
