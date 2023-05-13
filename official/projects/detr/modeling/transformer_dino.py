@@ -77,8 +77,8 @@ class BBoxEmbed(tf.keras.Model):
       bias_initializer=fanin_bias_initializer,
       name=f"{prefix}/box_dense_1")
     self.dense_2 = tf.keras.layers.Dense(
-      4,  kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
-      bias_initializer=fanin_bias_initializer,
+      4,  kernel_initializer=tf.keras.initializers.Zeros(),
+      bias_initializer=tf.keras.initializers.Zeros(),
       name=f"{prefix}/box_dense_2")
 
   def call(self, inputs):
