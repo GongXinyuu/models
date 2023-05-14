@@ -194,7 +194,8 @@ class DINO(tf.keras.Model):
     self.refpoint_embed = self.add_weight(
       "dino/refpoint_embeddings",
       shape=[self._num_queries, self._query_dim],
-      initializer=transformer_dino.refpoint_initializer if self._random_refpoints_xy else None,
+      initializer=transformer_dino.refpoint_initializer if self._random_refpoints_xy \
+        else tf.keras.initializers.RandomNormal(),
       dtype=tf.float32
     )
 
@@ -254,7 +255,7 @@ class DINO(tf.keras.Model):
     features = self._backbone(inputs)[self._backbone_endpoint_name]
     shape = tf.shape(features)
     mask = self._generate_image_mask(inputs, shape[1: 3])
-    embedweight = tf.tile(tf.expand_dims(self.refpoint_embed, axis=0), (batch_size, 1, 1))
+    embedweight = tf.tile(tf.expand_dims(self.refpoint_embed, axis=0), (batch_size, 1, 1))  # bs, num_queries, query_dim
 
     pos_embed = position_embedding_sine(
         mask[:, :, :, 0], num_pos_features=self._hidden_size, temperature=self._pe_temperature)
@@ -275,7 +276,6 @@ class DINO(tf.keras.Model):
 
     out_list = []
     for layer_idx, (decoded, reference) in enumerate(zip(decoded_list, reference_list)):
-      decoded = tf.stack(decoded)  # bs, num_queries, hidden_size, no effect
       output_class = self._class_embed(decoded)  # bs, num_queries, num_classes
 
       if not self._bbox_embed_diff_each_layer:
