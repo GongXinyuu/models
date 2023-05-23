@@ -26,7 +26,6 @@ import tensorflow as tf
 
 from official.modeling import tf_utils
 from official.projects.detr.modeling import transformer_dino
-from official.projects.detr.modeling import transformer
 from official.vision.ops import box_ops
 
 
@@ -195,7 +194,7 @@ class DINO(tf.keras.Model):
       "dino/refpoint_embeddings",
       shape=[self._num_queries, self._query_dim],
       initializer=transformer_dino.refpoint_initializer if self._random_refpoints_xy \
-        else tf.keras.initializers.RandomNormal(),
+        else tf.keras.initializers.RandomNormal(stddev=1.0),
       dtype=tf.float32
     )
 
@@ -323,7 +322,7 @@ class DINOTransformer(tf.keras.layers.Layer):
     hidden_size = pos_embed_tensor_shape[2]
     self._hidden_size = hidden_size
     if self._num_encoder_layers > 0:
-      self._encoder = transformer.TransformerEncoder(
+      self._encoder = transformer_dino.TransformerEncoder(
           attention_dropout_rate=self._dropout_rate,
           dropout_rate=self._dropout_rate,
           intermediate_dropout=self._dropout_rate,
@@ -396,7 +395,7 @@ class DINOTransformer(tf.keras.layers.Layer):
       tgt = tf.reshape(tgt, (bs, -1, self._hidden_size))  # (bs, num_patterns * num_queries, hidden_size)
       refpoint_embed = tf.tile(refpoint_embed, (1, self._num_patterns, 1))
 
-    decoded = self._decoder(
+    decoded, ref_points = self._decoder(
         tgt,
         memory,
         # TODO(b/199545430): self_attention_mask could be set to None when this
@@ -407,4 +406,4 @@ class DINOTransformer(tf.keras.layers.Layer):
         return_all_decoder_outputs=True,
         refpoints_unsigmoid=refpoint_embed,
         memory_pos_embed=pos_embed)
-    return decoded
+    return decoded, ref_points
