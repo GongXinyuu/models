@@ -198,10 +198,9 @@ class DINO(tf.keras.Model):
       dtype=tf.float32
     )
 
-    sqrt_k = math.sqrt(1.0 / self._hidden_size)
     self._class_embed = tf.keras.layers.Dense(
         self._num_classes,
-        kernel_initializer=tf.keras.initializers.RandomUniform(-sqrt_k, sqrt_k),
+        kernel_initializer=tf.keras.initializers.HeUniform(),
         bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
         name="dino/cls_dense")
 
