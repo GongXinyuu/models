@@ -102,9 +102,11 @@ def dino_coco() -> cfg.ExperimentConfig:
   train_batch_size = 32
   eval_batch_size = 64
   num_train_data = COCO_TRAIN_EXAMPLES
+  num_train_epoch = 50
+  decay_epoch = 40
   num_steps_per_epoch = num_train_data // train_batch_size
-  train_steps = 50 * num_steps_per_epoch  # 50 epochs
-  decay_at = train_steps - 10 * num_steps_per_epoch  # 40 epochs
+  train_steps = num_train_epoch * num_steps_per_epoch
+  decay_at = decay_epoch * num_steps_per_epoch
   config = cfg.ExperimentConfig(
       task=DinoTask(
           init_checkpoint='',
