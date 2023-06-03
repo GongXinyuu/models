@@ -170,9 +170,12 @@ def dino_coco_tfrecord() -> cfg.ExperimentConfig:
   """Config to get results that matches the paper."""
   train_batch_size = 32
   eval_batch_size = 64
-  steps_per_epoch = COCO_TRAIN_EXAMPLES // train_batch_size
-  train_steps = 50 * steps_per_epoch  # 50 epochs
-  decay_at = train_steps - 10 * steps_per_epoch  # 40 epochs
+  num_train_data = COCO_TRAIN_EXAMPLES
+  num_train_epoch = 50
+  decay_epoch = 40
+  num_steps_per_epoch = num_train_data // train_batch_size
+  train_steps = num_train_epoch * num_steps_per_epoch
+  decay_at = decay_epoch * num_steps_per_epoch
   config = cfg.ExperimentConfig(
       task=DinoTask(
           init_checkpoint='',
@@ -198,10 +201,10 @@ def dino_coco_tfrecord() -> cfg.ExperimentConfig:
       trainer=cfg.TrainerConfig(
           train_steps=train_steps,
           validation_steps=COCO_VAL_EXAMPLES // eval_batch_size,
-          steps_per_loop=steps_per_epoch,
-          summary_interval=steps_per_epoch,
-          checkpoint_interval=steps_per_epoch,
-          validation_interval=5 * steps_per_epoch,
+          steps_per_loop=num_steps_per_epoch,
+          summary_interval=num_steps_per_epoch,
+          checkpoint_interval=num_steps_per_epoch,
+          validation_interval=5 * num_steps_per_epoch,
           max_to_keep=1,
           best_checkpoint_export_subdir='best_ckpt',
           best_checkpoint_eval_metric='AP',
@@ -234,9 +237,12 @@ def dino_coco_tfds() -> cfg.ExperimentConfig:
   """Config to get results that matches the paper."""
   train_batch_size = 32
   eval_batch_size = 64
-  steps_per_epoch = COCO_TRAIN_EXAMPLES // train_batch_size
-  train_steps = 50 * steps_per_epoch  # 50 epochs
-  decay_at = train_steps - 10 * steps_per_epoch  # 40 epochs
+  num_train_data = COCO_TRAIN_EXAMPLES
+  num_train_epoch = 50
+  decay_epoch = 40
+  num_steps_per_epoch = num_train_data // train_batch_size
+  train_steps = num_train_epoch * num_steps_per_epoch
+  decay_at = decay_epoch * num_steps_per_epoch
   config = cfg.ExperimentConfig(
       task=DinoTask(
           init_checkpoint='',
@@ -262,10 +268,10 @@ def dino_coco_tfds() -> cfg.ExperimentConfig:
       trainer=cfg.TrainerConfig(
           train_steps=train_steps,
           validation_steps=COCO_VAL_EXAMPLES // eval_batch_size,
-          steps_per_loop=steps_per_epoch,
-          summary_interval=steps_per_epoch,
-          checkpoint_interval=steps_per_epoch,
-          validation_interval=5 * steps_per_epoch,
+          steps_per_loop=num_steps_per_epoch,
+          summary_interval=num_steps_per_epoch,
+          checkpoint_interval=num_steps_per_epoch,
+          validation_interval=5 * num_steps_per_epoch,
           max_to_keep=1,
           best_checkpoint_export_subdir='best_ckpt',
           best_checkpoint_eval_metric='AP',
