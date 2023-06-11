@@ -29,6 +29,56 @@ from official.projects.detr.modeling import transformer_dino
 from official.vision.ops import box_ops
 
 
+def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shapes, learnedwh=None):
+    """
+    Input:
+        - memory: bs, \sum{hw}, d_model
+        - memory_padding_mask: bs, \sum{hw}
+        - spatial_shapes: nlevel, 2
+        - learnedwh: 2
+    Output:
+        - output_memory: bs, \sum{hw}, d_model
+        - output_proposals: bs, \sum{hw}, 4
+    """
+    N_, S_, C_ = memory.shape
+    base_scale = 4.0
+    proposals = []
+    _cur = 0
+    for lvl, (H_, W_) in enumerate(spatial_shapes):
+        mask_flatten_ = tf.reshape(memory_padding_mask[:, _cur:(_cur + H_ * W_)], (N_, H_, W_, 1))
+        valid_H = tf.reduce_sum(tf.cast(~mask_flatten_[:, :, 0, 0], tf.float32), 1)
+        valid_W = tf.reduce_sum(tf.cast(~mask_flatten_[:, 0, :, 0], tf.float32), 1)
+
+        grid_y, grid_x = tf.meshgrid(tf.linspace(0, H_ - 1, H_), tf.linspace(0, W_ - 1, W_))
+        grid = tf.concat([tf.expand_dims(grid_x, -1), tf.expand_dims(grid_y, -1)], -1)  # H_, W_, 2
+
+        scale = tf.concat([tf.expand_dims(valid_W, -1), tf.expand_dims(valid_H, -1)], 1)
+        scale = tf.expand_dims(tf.expand_dims(scale, 1), 1)
+        grid = (grid[tf.newaxis, ...] + 0.5) / scale
+
+        if learnedwh is not None:
+            wh = tf.ones_like(grid) * tf.math.sigmoid(learnedwh) * (2.0 ** lvl)
+        else:
+            wh = tf.ones_like(grid) * 0.05 * (2.0 ** lvl)
+
+        proposal = tf.reshape(grid, (N_, -1, 4))
+        proposals.append(proposal)
+        _cur += (H_ * W_)
+
+    output_proposals = tf.concat(proposals, 1)
+    output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99))
+    output_proposals_valid = tf.reduce_all(output_proposals_valid, axis=-1, keepdims=True)
+    output_proposals = tf.math.log(output_proposals / (1 - output_proposals))  # unsigmoid
+    output_proposals = tf.where(tf.expand_dims(memory_padding_mask, -1), tf.constant(float('inf'), dtype=tf.float32), output_proposals)
+    output_proposals = tf.where(~output_proposals_valid, tf.constant(float('inf'), dtype=tf.float32), output_proposals)
+
+    output_memory = memory
+    output_memory = tf.where(tf.expand_dims(memory_padding_mask, -1), tf.constant(0.0, dtype=tf.float32), output_memory)
+    output_memory = tf.where(~output_proposals_valid, tf.constant(0.0, dtype=tf.float32), output_memory)
+
+    return output_memory, output_proposals
+
+
 def position_embedding_sine(attention_mask,
                             num_pos_features=256,
                             temperature=10000.,
@@ -137,6 +187,7 @@ class DINO(tf.keras.Model):
                num_queries,
                hidden_size,
                num_classes,
+               num_feature_levels=4,
                num_encoder_layers=6,
                num_decoder_layers=6,
                dropout_rate=0.1,
@@ -148,6 +199,7 @@ class DINO(tf.keras.Model):
                modulate_hw_attn=True,
                bbox_embed_diff_each_layer=False,
                random_refpoints_xy=False,
+               two_stage=True,
                **kwargs):
     super().__init__(**kwargs)
     assert query_dim in [2, 4]
@@ -155,6 +207,7 @@ class DINO(tf.keras.Model):
     self._num_queries = num_queries
     self._hidden_size = hidden_size
     self._num_classes = num_classes
+    self._num_feature_levels = num_feature_levels
     self._num_encoder_layers = num_encoder_layers
     self._num_decoder_layers = num_decoder_layers
     self._dropout_rate = dropout_rate
@@ -166,14 +219,42 @@ class DINO(tf.keras.Model):
     self._modulate_hw_attn = modulate_hw_attn
     self._bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
     self._random_refpoints_xy = random_refpoints_xy
+    self._two_stage = two_stage
     if hidden_size % 2 != 0:
       raise ValueError("hidden_size must be a multiple of 2.")
     self._backbone = backbone
     self._backbone_endpoint_name = backbone_endpoint_name
 
   def build(self, input_shape=None):
-    self._input_proj = tf.keras.layers.Conv2D(
-        self._hidden_size, 1, name="dino/conv2d")
+    num_channels = [512, 1024, 2048]  # designated for ResNet50
+    # prepare input projection layers
+    if self._num_feature_levels  > 1:
+      num_backbone_outs = len(num_channels)
+      input_proj_list = []
+      for idx in range(num_backbone_outs):
+        in_channels = num_channels[idx]
+        input_proj_list.append(tf.keras.Sequential([
+          tf.keras.layers.Conv2D(self._hidden_size, kernel_size=1, input_shape=(None, None, in_channels)),
+          tf.keras.layers.GroupNormalization(32),
+          tf.keras.layers.ReLU()
+        ]))
+      for _ in range(self._num_feature_levels - num_backbone_outs):
+        input_proj_list.append(tf.keras.Sequential([
+          tf.keras.layers.Conv2D(self._hidden_size, kernel_size=3, strides=2, padding='same', input_shape=(None, None, in_channels)),
+          tf.keras.layers.GroupNormalization(32),
+          tf.keras.layers.ReLU()
+        ]))
+        in_channels = self._hidden_size
+      self._input_proj = input_proj_list
+    else:
+      assert not self._two_stage
+      self._input_proj = [
+        tf.keras.Sequential([
+          tf.keras.layers.Conv2D(self._hidden_size, kernel_size=1, input_shape=(None, None, num_channels[-1])),
+          tf.keras.layers.GroupNormalization(32),
+          tf.keras.layers.ReLU()
+        ])
+      ]
     self._build_detection_decoder()
     super().build(input_shape)
 
@@ -203,6 +284,13 @@ class DINO(tf.keras.Model):
         kernel_initializer=tf.keras.initializers.HeUniform(),
         bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
         name="dino/cls_dense")
+
+    self.enc_out_bbox_embed = transformer_dino.BBoxEmbed(self._hidden_size, prefix=f'dino/enc_out_bbox_embed')
+    self.enc_out_class_embed = tf.keras.layers.Dense(
+        self._num_classes,
+        kernel_initializer=tf.keras.initializers.HeUniform(),
+        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
+        name="dino/enc_out_cls_dense")
 
     self._sigmoid = tf.keras.layers.Activation("sigmoid")
 
@@ -250,18 +338,50 @@ class DINO(tf.keras.Model):
 
   def call(self, inputs: tf.Tensor, training: bool = None) -> List[Any]:
     batch_size = tf.shape(inputs)[0]
-    features = self._backbone(inputs)[self._backbone_endpoint_name]
-    shape = tf.shape(features)
-    mask = self._generate_image_mask(inputs, shape[1: 3])
+    # features = self._backbone(inputs)[self._backbone_endpoint_name]
+    features_all = self._backbone(inputs)
+    features = [features_all[name] for name in self._backbone_endpoint_name]
+
+    srcs = []
+    masks = []
+    poss = []
+    for l, feat in enumerate(features):
+      srcs.append(self._input_proj[l](feat))
+      mask = self._generate_image_mask(inputs, tf.shape(feat)[1: 3])
+      masks.append(mask)
+      pos_embed = position_embedding_sine(
+        mask[:, :, :, 0], num_pos_features=self._hidden_size, temperature=self._pe_temperature)
+      poss.append(pos_embed)
+
+    if self._num_feature_levels > len(srcs):
+      _len_srcs = len(srcs)
+      for l in range(_len_srcs, self.num_feature_levels):
+        if l == _len_srcs:
+          feat = features[-1]
+        else:
+          feat = src[-1]
+        src = self._input_proj[l](feat)
+        srcs.append(src)
+        mask = self._generate_image_mask(inputs, tf.shape(feat)[1: 3])
+        masks.append(mask)
+        pos_embed = position_embedding_sine(
+          mask[:, :, :, 0], num_pos_features=self._hidden_size, temperature=self._pe_temperature)
+        poss.append(pos_embed)
+
+    # shape = tf.shape(features)
+    # mask = self._generate_image_mask(inputs, shape[1: 3])
+    # TODO: leave it here for now
     embedweight = tf.tile(tf.expand_dims(self.refpoint_embed, axis=0), (batch_size, 1, 1))  # bs, num_queries, query_dim
 
-    pos_embed = position_embedding_sine(
-        mask[:, :, :, 0], num_pos_features=self._hidden_size, temperature=self._pe_temperature)
-    pos_embed = tf.reshape(pos_embed, [batch_size, -1, self._hidden_size])
+    # pos_embed = position_embedding_sine(
+    #     mask[:, :, :, 0], num_pos_features=self._hidden_size, temperature=self._pe_temperature)
 
-    features = tf.reshape(
-        self._input_proj(features), [batch_size, -1, self._hidden_size])
-    mask = tf.reshape(mask, [batch_size, -1])
+    # move this reshape part into transformer
+    # pos_embed = tf.reshape(pos_embed, [batch_size, -1, self._hidden_size])
+    #
+    # features = tf.reshape(
+    #     self._input_proj(features), [batch_size, -1, self._hidden_size])
+    # mask = tf.reshape(mask, [batch_size, -1])
 
     decoded_list, reference_list = self._transformer({
         "inputs":
@@ -296,13 +416,14 @@ class DINO(tf.keras.Model):
 class DINOTransformer(tf.keras.layers.Layer):
   """Encoder and Decoder of DINO."""
 
-  def __init__(self, num_encoder_layers=6, num_decoder_layers=6,
+  def __init__(self, num_feature_levels=4, num_encoder_layers=6, num_decoder_layers=6,
                dropout_rate=0.1, query_dim=4, keep_query_pos=False,
                query_scale_type='cond_elewise', num_patterns=0,
-               modulate_hw_attn=True, bbox_embed_diff_each_layer=False, **kwargs):
+               modulate_hw_attn=True, bbox_embed_diff_each_layer=False, two_stage=True, **kwargs):
     super().__init__(**kwargs)
     assert query_scale_type in ['cond_elewise', 'cond_scalar', 'fix_elewise']
 
+    self._num_feature_levels = num_feature_levels
     self._dropout_rate = dropout_rate
     self._num_encoder_layers = num_encoder_layers
     self._num_decoder_layers = num_decoder_layers
@@ -312,6 +433,16 @@ class DINOTransformer(tf.keras.layers.Layer):
     self._modulate_hw_attn = modulate_hw_attn
     self._num_patterns = num_patterns
     self._bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
+    self._two_stage = two_stage
+
+  def get_valid_ratio(self, mask):
+    _, H, W = mask.shape
+    valid_H = tf.reduce_sum(tf.cast(~mask[:, :, 0], tf.float32), axis=1)
+    valid_W = tf.reduce_sum(tf.cast(~mask[:, 0, :], tf.float32), axis=1)
+    valid_ratio_h = valid_H / H
+    valid_ratio_w = valid_W / W
+    valid_ratio = tf.stack([valid_ratio_w, valid_ratio_h], axis=-1)
+    return valid_ratio
 
   def build(self, input_shape=None):
     pos_embed_tensor_shape = tf.TensorShape(input_shape['pos_embed'])
@@ -349,6 +480,23 @@ class DINOTransformer(tf.keras.layers.Layer):
         dtype=tf.float32
       )
 
+    if self._num_feature_levels > 1:
+      self.level_embed = self.add_weight(
+          "dino/level_embed",
+          shape=[self._num_feature_levels, hidden_size],
+          initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+          dtype=tf.float32
+        )
+    else:
+      self.level_embed = None
+
+    if self._two_stage:
+      self.enc_output = tf.keras.layers.Dense(
+        hidden_size,kernel_initializer=tf.keras.initializers.HeUniform(),
+        bias_initializer=transformer_dino.FanInBiasInitializer())
+      self.enc_output_norm = tf.keras.layers.LayerNormalization(
+        epsilon=1e-5, dtype="float32")
+
     super().build(input_shape)
 
   def get_config(self):
@@ -365,18 +513,71 @@ class DINOTransformer(tf.keras.layers.Layer):
     }
 
   def call(self, inputs):
-    sources = inputs["inputs"]
+    sources = inputs["inputs"]  # a list
     refpoint_embed = inputs["targets"]  # query embeddings, shape: (bs, num_queries, query_dim)
-    pos_embed = inputs["pos_embed"]
-    mask = inputs["mask"]
+    pos_embeds = inputs["pos_embed"]  # a list
+    masks = inputs["mask"]  # a list
     input_shape = tf_utils.get_shape_list(sources)
-    source_attention_mask = tf.tile(
-        tf.expand_dims(mask, axis=1), [1, input_shape[1], 1])
+    # source_attention_mask = tf.tile(
+    #     tf.expand_dims(mask, axis=1), [1, input_shape[1], 1])
+
+    # move this reshape part into transformer
+    # pos_embed = tf.reshape(pos_embed, [batch_size, -1, self._hidden_size])
+    #
+    # features = tf.reshape(
+    #     self._input_proj(features), [batch_size, -1, self._hidden_size])
+    # mask = tf.reshape(mask, [batch_size, -1])
+
+    # prepare input for encoder
+    src_flatten = []
+    mask_flatten = []
+    lvl_pos_embed_flatten = []
+    spatial_shapes = []
+
+    for lvl, (src, mask, pos_embed) in enumerate(zip(sources, masks, pos_embeds)):
+      bs, h, w, c = tf_utils.get_shape_list(src)
+      src = tf.reshape(src, [bs, h * w, c])
+      mask = tf.reshape(mask, [bs, h * w])
+      pos_embed = tf.reshape(pos_embed, [bs, h * w, -1])
+      if self._num_feature_levels > 1 and self.level_embed is not None:
+        lvl_pos_embed = pos_embed + tf.reshape(self.level_embed[lvl], (1, 1, -1))
+      else:
+        lvl_pos_embed = pos_embed
+      lvl_pos_embed_flatten.append(lvl_pos_embed)
+      src_flatten.append(src)
+      mask_flatten.append(mask)
+      spatial_shapes.append((h, w))
+
+    src_flatten = tf.concat(src_flatten, axis=1)  # bs, \sum{hxw}, c
+    mask_flatten = tf.concat(mask_flatten, axis=1)  # bs, \sum{hxw}
+    lvl_pos_embed_flatten = tf.concat(lvl_pos_embed_flatten, axis=1)  # bs, \sum{hxw}, c
+    spatial_shapes = tf.convert_to_tensor(spatial_shapes, dtype=tf.int32)
+    level_start_index = tf.concat(
+      [tf.zeros((1,), dtype=tf.int32), tf.cumsum(tf.reduce_prod(spatial_shapes, axis=1)[:-1])], axis=0)
+    valid_ratios = tf.stack([self.get_valid_ratio(m) for m in masks], axis=1)
+
+    # two stage
+    enc_topk_proposals = enc_refpoint_embed = None
+    #########################################################
+    # Begin Encoder
+    #########################################################
     if self._encoder is not None:
       memory = self._encoder(
-          sources, attention_mask=source_attention_mask, pos_embed=pos_embed)
+          src_flatten, attention_mask=source_attention_mask, pos_embed=lvl_pos_embed_flatten)
     else:
       memory = sources
+    #########################################################
+    # End Encoder
+    #########################################################
+
+    #########################################################
+    # Begin Two-stage
+    #########################################################
+    input_hw = None
+
+    #########################################################
+    # End Two-stage
+    #########################################################
 
     target_shape = tf_utils.get_shape_list(refpoint_embed)
     cross_attention_mask = tf.tile(

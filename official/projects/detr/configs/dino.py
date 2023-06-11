@@ -16,7 +16,7 @@
 
 import dataclasses
 import os
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 
 from official.core import config_definitions as cfg
 from official.core import exp_factory
@@ -68,7 +68,7 @@ class Dino(hyperparams.Config):
   backbone: backbones.Backbone = backbones.Backbone(
       type='resnet', resnet=backbones.ResNet(model_id=50, bn_trainable=False))
   norm_activation: common.NormActivation = common.NormActivation()
-  backbone_endpoint_name: str = '5'
+  backbone_endpoint_name: Tuple = ('3', '4', '5',)
   dropout_rate: int = 0.1
   pe_temperature: float = 20.0
   query_dim: int = 4
