@@ -183,3 +183,80 @@ class DINOTask(detection.DetectionTask):
 
     total_loss = cls_loss + box_loss + giou_loss + aux_losses
     return total_loss, cls_loss, box_loss, giou_loss
+
+  def train_step(self, inputs, model, optimizer, metrics=None):
+    """Does forward and backward.
+
+    Args:
+      inputs: a dictionary of input tensors.
+      model: the model, forward pass definition.
+      optimizer: the optimizer for this training step.
+      metrics: a nested structure of metrics objects.
+
+    Returns:
+      A dictionary of logs.
+    """
+    features, labels = inputs
+    with tf.GradientTape() as tape:
+      outputs, interm_out = model(features, training=True)
+
+      loss = 0.0
+      cls_loss = 0.0
+      box_loss = 0.0
+      giou_loss = 0.0
+
+      for output in outputs:
+        # Computes per-replica loss.
+        layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(
+            outputs=output, labels=labels, aux_losses=model.losses)
+        loss += layer_loss
+        cls_loss += layer_cls_loss
+        box_loss += layer_box_loss
+        giou_loss += layer_giou_loss
+
+      # compute intermediate loss
+      layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(
+        outputs=interm_out, labels=labels, aux_losses=model.losses)
+      loss += layer_loss
+      cls_loss += layer_cls_loss
+      box_loss += layer_box_loss
+      giou_loss += layer_giou_loss
+
+      # Consider moving scaling logic from build_losses to here.
+      scaled_loss = loss
+      # For mixed_precision policy, when LossScaleOptimizer is used, loss is
+      # scaled for numerical stability.
+      if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+        scaled_loss = optimizer.get_scaled_loss(scaled_loss)
+
+    tvars = model.trainable_variables
+    grads = tape.gradient(scaled_loss, tvars)
+    # Scales back gradient when LossScaleOptimizer is used.
+    if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+      grads = optimizer.get_unscaled_gradients(grads)
+    optimizer.apply_gradients(list(zip(grads, tvars)))
+
+    # Multiply for logging.
+    # Since we expect the gradient replica sum to happen in the optimizer,
+    # the loss is scaled with global num_boxes and weights.
+    # To have it more interpretable/comparable we scale it back when logging.
+    num_replicas_in_sync = tf.distribute.get_strategy().num_replicas_in_sync
+    loss *= num_replicas_in_sync
+    cls_loss *= num_replicas_in_sync
+    box_loss *= num_replicas_in_sync
+    giou_loss *= num_replicas_in_sync
+
+    # Trainer class handles loss metric for you.
+    logs = {self.loss: loss}
+
+    all_losses = {
+        'cls_loss': cls_loss,
+        'box_loss': box_loss,
+        'giou_loss': giou_loss,
+    }
+
+    # Metric results will be added to logs for you.
+    if metrics:
+      for m in metrics:
+        m.update_state(all_losses[m.name])
+    return logs

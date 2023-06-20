@@ -40,6 +40,7 @@ class DinoTest(tf.test.TestCase):
 
   def test_get_from_config_dino_transformer(self):
     config = {
+        'num_classes': 10,
         'num_encoder_layers': 1,
         'num_decoder_layers': 2,
         'dropout_rate': 0.5,
@@ -49,6 +50,10 @@ class DinoTest(tf.test.TestCase):
         "modulate_hw_attn": True,
         "num_patterns": 0,
         "bbox_embed_diff_each_layer": False,
+        "two_stage": True,
+        "two_stage_learn_wh": False,
+        "topk": 100,
+
     }
     detr_model = dino.DINOTransformer.from_config(config)
     retrieved_config = detr_model.get_config()
@@ -73,6 +78,7 @@ class DinoTest(tf.test.TestCase):
         "num_patterns": 0,
         "bbox_embed_diff_each_layer": False,
         "random_refpoints_xy": False,
+        "two_stage": True,
     }
     detr_model = dino.DINO.from_config(config)
     retrieved_config = detr_model.get_config()

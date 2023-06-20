@@ -131,6 +131,57 @@ def gen_sineembed_for_position(pos_tensor):
 
   return pos
 
+def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, learnedwh=None):
+  """
+  Input:
+      - memory: bs, \sum{hw}, d_model
+      - memory_padding_mask: bs, \sum{hw}
+      - spatial_shapes: nlevel, 2
+      - learnedwh: 2
+  Output:
+      - output_memory: bs, \sum{hw}, d_model
+      - output_proposals: bs, \sum{hw}, 4
+  """
+  N_, S_, C_ = memory.shape
+  base_scale = 4.0
+  proposals = []
+  lvl = 0  # TODO: check
+  # for lvl, (H_, W_) in enumerate(spatial_shapes):
+  H_, W_ = spatial_shape
+  mask_flatten_ = tf.reshape(memory_padding_mask[:, 0:(H_ * W_)], (N_, H_, W_, 1))
+  mask_flatten_bool = tf.cast(mask_flatten_, tf.bool)
+  valid_H = tf.reduce_sum(tf.cast(~mask_flatten_bool[:, :, 0, 0], tf.float32), axis=1)
+  valid_W = tf.reduce_sum(tf.cast(~mask_flatten_bool[:, 0, :, 0], tf.float32), axis=1)
+
+  grid_y, grid_x = tf.meshgrid(tf.linspace(0, H_ - 1, H_), tf.linspace(0, W_ - 1, W_))
+  grid = tf.stack([grid_x, grid_y], axis=-1)  # H_, W_, 2
+  grid = tf.cast(grid, tf.float32)
+
+  scale = tf.reshape(tf.stack([valid_W[..., tf.newaxis], valid_H[..., tf.newaxis]], axis=1), (N_, 1, 1, 2))
+  grid = (tf.expand_dims(grid, 0) + 0.5) / scale
+
+  if learnedwh is not None:
+    wh = tf.ones_like(grid) * tf.math.sigmoid(learnedwh) * (2.0 ** lvl)
+  else:
+    wh = tf.ones_like(grid) * 0.05 * (2.0 ** lvl)
+
+  proposal = tf.reshape(tf.concat((grid, wh), axis=-1), (N_, -1, 4))
+  proposals.append(proposal)
+
+  output_proposals = tf.concat(proposals, axis=1)
+  output_proposals_valid = tf.reduce_all((output_proposals > 0.01) & (output_proposals < 0.99), axis=-1,
+                                         keepdims=True)
+  output_proposals = tf.math.log(output_proposals / (1 - output_proposals))  # unsigmoid
+  memory_padding_mask_bool = tf.cast(memory_padding_mask, tf.bool)
+  output_proposals = tf.where(tf.expand_dims(memory_padding_mask_bool, -1), float('inf'), output_proposals)
+  output_proposals = tf.where(~output_proposals_valid, float('inf'), output_proposals)
+
+  output_memory = memory
+  output_memory = tf.where(tf.expand_dims(memory_padding_mask_bool, -1), 0., output_memory)
+  output_memory = tf.where(~output_proposals_valid, 0., output_memory)
+
+  return output_memory, output_proposals
+
 
 class MLP(tf.keras.Model):
   """ Very simple multi-layer perceptron (also called FFN)"""
@@ -160,7 +211,7 @@ class TransformerEncoder(tf.keras.layers.Layer):
                num_layers=6,
                num_attention_heads=8,
                intermediate_size=2048,
-               activation="prelu",
+               activation="relu",
                dropout_rate=0.0,
                attention_dropout_rate=0.0,
                use_bias=True,
@@ -564,7 +615,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
                num_layers=6,
                num_attention_heads=8,
                intermediate_size=2048,
-               activation="prelu",
+               activation="relu",
                dropout_rate=0.0,
                attention_dropout_rate=0.0,
                use_bias=True,
