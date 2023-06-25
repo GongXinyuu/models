@@ -301,6 +301,8 @@ class DINO(tf.keras.Model):
     mask = tf.expand_dims(
         tf.cast(tf.not_equal(tf.reduce_sum(inputs, axis=-1), 0), inputs.dtype),
         axis=-1)
+    # padding area is set to 0
+    # image area is set to 1
     mask = tf.image.resize(
         mask, target_shape, method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
     return mask
@@ -312,7 +314,7 @@ class DINO(tf.keras.Model):
     height = shape[1]
     width = shape[2]
     spatial_shape = [height, width]
-    mask = self._generate_image_mask(inputs, shape[1: 3])
+    mask = self._generate_image_mask(inputs, shape[1: 3])  # [batch, height, width]
     if self.refpoint_embed is not None:
       embedweight = tf.tile(tf.expand_dims(self.refpoint_embed, axis=0), (batch_size, 1, 1))  # bs, num_queries, query_dim
     else:
@@ -324,7 +326,7 @@ class DINO(tf.keras.Model):
 
     features = tf.reshape(
         self._input_proj(features), [batch_size, -1, self._hidden_size])
-    mask = tf.reshape(mask, [batch_size, -1])  # [batch, height * width]
+    # mask = tf.reshape(mask, [batch_size, -1])  # [batch, height * width]
 
     decoded_list, reference_list, hs_enc, ref_enc, init_box_proposal = self._transformer({
         "inputs":
@@ -455,11 +457,12 @@ class DINOTransformer(tf.keras.layers.Layer):
   def call(self, inputs):
     sources = inputs["inputs"]
     pos_embed = inputs["pos_embed"]
-    mask = inputs["mask"]   # （bs, h*w)
+    mask = inputs["mask"]   # （bs, h, w)
+    mask_flatten = tf.reshape(mask, [tf.shape(mask)[0], -1])  # (bs, hw)
     spatial_shape = inputs["spatial_shape"]
     input_shape = tf_utils.get_shape_list(sources)
     source_attention_mask = tf.tile(
-        tf.expand_dims(mask, axis=1), [1, input_shape[1], 1])
+        tf.expand_dims(mask_flatten, axis=1), [1, input_shape[1], 1])
     if self._encoder is not None:
       memory = self._encoder(
           sources, attention_mask=source_attention_mask, pos_embed=pos_embed)
@@ -497,7 +500,7 @@ class DINOTransformer(tf.keras.layers.Layer):
       init_box_proposal = tf.math.sigmoid(refpoint_embed)
 
     cross_attention_mask = tf.tile(
-      tf.expand_dims(mask, axis=1), [1, target_shape[1], 1])
+      tf.expand_dims(mask_flatten, axis=1), [1, target_shape[1], 1])
     #########################################################
     # End preparing tgt
     # - tgt: bs, topk, d_model

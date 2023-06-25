@@ -135,7 +135,7 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, lea
   """
   Input:
       - memory: bs, \sum{hw}, d_model
-      - memory_padding_mask: bs, \sum{hw}
+      - memory_padding_mask: bs, h, w
       - spatial_shapes: nlevel, 2
       - learnedwh: 2
   Output:
@@ -145,13 +145,18 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, lea
   N_, S_, C_ = memory.shape
   base_scale = 4.0
   proposals = []
-  lvl = 0  # TODO: check
+  lvl = 3  # TODO: check
   # for lvl, (H_, W_) in enumerate(spatial_shapes):
-  H_, W_ = spatial_shape
-  mask_flatten_ = tf.reshape(memory_padding_mask[:, 0:(H_ * W_)], (N_, H_, W_, 1))
+  # H_, W_ = spatial_shape
+  H_ = tf.shape(memory_padding_mask)[1]
+  W_ = tf.shape(memory_padding_mask)[2]
+  # mask_flatten_ = tf.reshape(memory_padding_mask[:, :(H_ * W_)], (N_, H_, W_, 1))
+  mask_flatten_ = tf.expand_dims(memory_padding_mask, axis=-1)  # N_, H_, W_, 1
   mask_flatten_bool = tf.cast(mask_flatten_, tf.bool)
-  valid_H = tf.reduce_sum(tf.cast(~mask_flatten_bool[:, :, 0, 0], tf.float32), axis=1)
-  valid_W = tf.reduce_sum(tf.cast(~mask_flatten_bool[:, 0, :, 0], tf.float32), axis=1)
+  counter_mask_flatten_bool = ~mask_flatten_bool
+
+  valid_H = tf.reduce_sum(tf.cast(~counter_mask_flatten_bool[:, :, 0, 0], tf.float32), axis=1)
+  valid_W = tf.reduce_sum(tf.cast(~counter_mask_flatten_bool[:, 0, :, 0], tf.float32), axis=1)
 
   grid_y, grid_x = tf.meshgrid(tf.linspace(0, H_ - 1, H_), tf.linspace(0, W_ - 1, W_))
   grid = tf.stack([grid_x, grid_y], axis=-1)  # H_, W_, 2
@@ -172,12 +177,13 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, lea
   output_proposals_valid = tf.reduce_all((output_proposals > 0.01) & (output_proposals < 0.99), axis=-1,
                                          keepdims=True)
   output_proposals = tf.math.log(output_proposals / (1 - output_proposals))  # unsigmoid
-  memory_padding_mask_bool = tf.cast(memory_padding_mask, tf.bool)
-  output_proposals = tf.where(tf.expand_dims(memory_padding_mask_bool, -1), float('inf'), output_proposals)
+  memory_padding_mask_squeeze_bool = tf.cast(tf.reshape(memory_padding_mask, [N_, -1]), tf.bool)
+  counter_memory_padding_mask_squeeze_bool= ~memory_padding_mask_squeeze_bool
+  output_proposals = tf.where(tf.expand_dims(counter_memory_padding_mask_squeeze_bool, -1), float('inf'), output_proposals)
   output_proposals = tf.where(~output_proposals_valid, float('inf'), output_proposals)
 
   output_memory = memory
-  output_memory = tf.where(tf.expand_dims(memory_padding_mask_bool, -1), 0., output_memory)
+  output_memory = tf.where(tf.expand_dims(counter_memory_padding_mask_squeeze_bool, -1), 0., output_memory)
   output_memory = tf.where(~output_proposals_valid, 0., output_memory)
 
   return output_memory, output_proposals
