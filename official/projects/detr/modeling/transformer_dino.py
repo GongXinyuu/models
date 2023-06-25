@@ -142,7 +142,7 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, lea
       - output_memory: bs, \sum{hw}, d_model
       - output_proposals: bs, \sum{hw}, 4
   """
-  N_, S_, C_ = memory.shape
+  N_ = tf.shape(memory)[0]
   base_scale = 4.0
   proposals = []
   lvl = 3  # TODO: check
