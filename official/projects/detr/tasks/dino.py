@@ -76,7 +76,6 @@ class DINOTask(detection.DetectionTask):
                       self._task_config.model.dropout_rate,
                       query_dim=self._task_config.model.query_dim,
                       keep_query_pos=self._task_config.model.keep_query_pos,
-                      query_scale_type=self._task_config.model.query_scale_type,
                       num_patterns=self._task_config.model.num_patterns,
                       modulate_hw_attn=self._task_config.model.modulate_hw_attn,
                       bbox_embed_diff_each_layer=self._task_config.model.bbox_embed_diff_each_layer,
@@ -96,12 +95,12 @@ class DINOTask(detection.DetectionTask):
                (tf.gather(pos_cost_class, cls_targets, batch_dims=1, axis=-1) - tf.gather(neg_cost_class, cls_targets, batch_dims=1, axis=-1))
 
     # Compute the L1 cost between boxes,
-    paired_differences = self._task_config.losses.lambda_box * tf.abs(
+    paired_differences = self._task_config.losses.lambda_box_cost * tf.abs(
         tf.expand_dims(box_outputs, 2) - tf.expand_dims(box_targets, 1))
     box_cost = tf.reduce_sum(paired_differences, axis=-1)
 
     # Compute the giou cost betwen boxes
-    giou_cost = self._task_config.losses.lambda_giou * -box_ops.bbox_generalized_overlap(
+    giou_cost = self._task_config.losses.lambda_giou_cost * -box_ops.bbox_generalized_overlap(
         box_ops.cycxhw_to_yxyx(box_outputs),
         box_ops.cycxhw_to_yxyx(box_targets))
 
@@ -109,8 +108,8 @@ class DINOTask(detection.DetectionTask):
 
     max_cost = (
         self._task_config.losses.lambda_cls_cost * 0.0 +
-        self._task_config.losses.lambda_box * 4. +
-        self._task_config.losses.lambda_giou * 0.0)
+        self._task_config.losses.lambda_box_cost * 4. +
+        self._task_config.losses.lambda_giou_cost * 0.0)
 
     # Set pads to large constant
     valid = tf.expand_dims(
@@ -125,8 +124,12 @@ class DINOTask(detection.DetectionTask):
 
     return total_cost
 
-  def build_losses(self, outputs, labels, aux_losses=None):
+  def build_losses(self, outputs, labels, aux_losses=None, lambda_cls=None, lambda_box=None, lambda_giou=None):
     """Builds DINO losses."""
+    lambda_cls = self._task_config.losses.lambda_cls if lambda_cls is None else lambda_cls
+    lambda_box = self._task_config.losses.lambda_box if lambda_box is None else lambda_box
+    lambda_giou = self._task_config.losses.lambda_giou if lambda_giou is None else lambda_giou
+
     cls_outputs = outputs['cls_outputs']  # bs, num_queries, num_classes
     box_outputs = outputs['box_outputs']
     cls_targets = labels['classes']
@@ -150,20 +153,18 @@ class DINOTask(detection.DetectionTask):
     # focal loss for class imbalance.
     cls_targets_one_hot = tf.one_hot(cls_targets, self._task_config.model.num_classes)
     # cls_loss shape: [batch_size, num_queries, num_classes]
-    cls_loss = self._task_config.losses.lambda_cls * tf.reduce_sum(self._cls_loss_fn(cls_targets_one_hot, cls_assigned))
+    cls_loss = lambda_cls * tf.reduce_sum(self._cls_loss_fn(cls_targets_one_hot, cls_assigned))
 
     # Box loss is only calculated on non-background class.
     l_1 = tf.reduce_sum(tf.abs(box_assigned - box_targets), axis=-1)
-    box_loss = self._task_config.losses.lambda_box * tf.where(
-        background, tf.zeros_like(l_1), l_1)
+    box_loss = lambda_box * tf.where(background, tf.zeros_like(l_1), l_1)
 
     # Giou loss is only calculated on non-background class.
     giou = tf.linalg.diag_part(1.0 - box_ops.bbox_generalized_overlap(
         box_ops.cycxhw_to_yxyx(box_assigned),
         box_ops.cycxhw_to_yxyx(box_targets)
         ))
-    giou_loss = self._task_config.losses.lambda_giou * tf.where(
-        background, tf.zeros_like(giou), giou)
+    giou_loss = lambda_giou * tf.where(background, tf.zeros_like(giou), giou)
 
     # Consider doing all reduce once in train_step to speed up.
     num_boxes_per_replica = tf.reduce_sum(num_boxes)
@@ -205,6 +206,7 @@ class DINOTask(detection.DetectionTask):
       box_loss = 0.0
       giou_loss = 0.0
 
+      # final loss +  aux loss
       for output in outputs:
         # Computes per-replica loss.
         layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(

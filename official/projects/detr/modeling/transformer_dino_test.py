@@ -68,13 +68,13 @@ class TransformerTest(tf.test.TestCase):
         'dropout_rate': 0.0,
         'attention_dropout_rate': 0.0,
         'kernel_initializer': {
-            'class_name': 'GlorotUniform',
+            'class_name': 'HeUniform',
             'config': {
                 'seed': None
             }
         },
         'bias_initializer': {
-            'class_name': 'Zeros',
+            'class_name': 'FanInBiasInitializer',
             'config': {}
         },
         'kernel_regularizer': None,
@@ -86,7 +86,7 @@ class TransformerTest(tf.test.TestCase):
         'norm_epsilon': 1e-12,
         'intermediate_dropout': 0.0,
         'attention_initializer': {
-            'class_name': 'GlorotUniform',
+            'class_name': 'HeUniform',
             'config': {
                 'seed': None
             }
@@ -105,7 +105,6 @@ class TransformerTest(tf.test.TestCase):
     intermediate_size = 256
     query_dim = 4
     keep_query_pos = False
-    query_scale_type = 'cond_elewise'
     modulate_hw_attn = True
     bbox_embed_diff_each_layer = False
     model = transformer_dino.TransformerDecoder(
@@ -114,7 +113,6 @@ class TransformerTest(tf.test.TestCase):
         intermediate_size=intermediate_size,
         query_dim=query_dim,
         keep_query_pos=keep_query_pos,
-        query_scale_type=query_scale_type,
         modulate_hw_attn=modulate_hw_attn,
         bbox_embed_diff_each_layer=bbox_embed_diff_each_layer,
     )
@@ -161,7 +159,6 @@ class TransformerTest(tf.test.TestCase):
         'num_attention_heads': 2,
         "query_dim": 4,
         "keep_query_pos": False,
-        "query_scale_type": 'cond_elewise',
         "modulate_hw_attn": True,
         "bbox_embed_diff_each_layer": False,
         "iter_update": True,
@@ -169,11 +166,14 @@ class TransformerTest(tf.test.TestCase):
         'activation': 'relu',
         'dropout_rate': 0.0,
         'attention_dropout_rate': 0.0,
-        'use_bias': False,
+        'use_bias': True,
         'norm_epsilon': 1e-06,
-        'intermediate_dropout': 0.0
+        'intermediate_dropout': 0.0,
+        'conditional_query': False,
+        'use_detached_boxes_dec_out': False
     }
     self.assertAllEqual(expected_config, config)
+
 
 if __name__ == '__main__':
   tf.test.main()

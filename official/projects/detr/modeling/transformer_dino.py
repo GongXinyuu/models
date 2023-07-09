@@ -131,11 +131,11 @@ def gen_sineembed_for_position(pos_tensor):
 
   return pos
 
-def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, learnedwh=None):
+def gen_encoder_output_proposals(memory, memory_padding_mask, learnedwh=None):
   """
   Input:
       - memory: bs, \sum{hw}, d_model
-      - memory_padding_mask: bs, h, w
+      - memory_padding_mask: bs, h, w. 1 for valid, 0 for invalid.
       - spatial_shapes: nlevel, 2
       - learnedwh: 2
   Output:
@@ -143,20 +143,15 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, lea
       - output_proposals: bs, \sum{hw}, 4
   """
   N_ = tf.shape(memory)[0]
-  base_scale = 4.0
-  proposals = []
+  # proposals = []
   lvl = 3  # TODO: check
-  # for lvl, (H_, W_) in enumerate(spatial_shapes):
-  # H_, W_ = spatial_shape
   H_ = tf.shape(memory_padding_mask)[1]
   W_ = tf.shape(memory_padding_mask)[2]
-  # mask_flatten_ = tf.reshape(memory_padding_mask[:, :(H_ * W_)], (N_, H_, W_, 1))
   mask_flatten_ = tf.expand_dims(memory_padding_mask, axis=-1)  # N_, H_, W_, 1
   mask_flatten_bool = tf.cast(mask_flatten_, tf.bool)
-  counter_mask_flatten_bool = ~mask_flatten_bool
 
-  valid_H = tf.reduce_sum(tf.cast(~counter_mask_flatten_bool[:, :, 0, 0], tf.float32), axis=1)
-  valid_W = tf.reduce_sum(tf.cast(~counter_mask_flatten_bool[:, 0, :, 0], tf.float32), axis=1)
+  valid_H = tf.reduce_sum(tf.cast(mask_flatten_bool[:, :, 0, 0], tf.float32), axis=1)
+  valid_W = tf.reduce_sum(tf.cast(mask_flatten_bool[:, 0, :, 0], tf.float32), axis=1)
 
   grid_y, grid_x = tf.meshgrid(tf.linspace(0, H_ - 1, H_), tf.linspace(0, W_ - 1, W_))
   grid = tf.stack([grid_x, grid_y], axis=-1)  # H_, W_, 2
@@ -171,19 +166,17 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, spatial_shape, lea
     wh = tf.ones_like(grid) * 0.05 * (2.0 ** lvl)
 
   proposal = tf.reshape(tf.concat((grid, wh), axis=-1), (N_, -1, 4))
-  proposals.append(proposal)
-
-  output_proposals = tf.concat(proposals, axis=1)
+  # proposals.append(proposal)
+  output_proposals = proposal  # N_, H_*W_, 4
   output_proposals_valid = tf.reduce_all((output_proposals > 0.01) & (output_proposals < 0.99), axis=-1,
-                                         keepdims=True)
+                                         keepdims=True)  # N_, H_*W_, 1
   output_proposals = tf.math.log(output_proposals / (1 - output_proposals))  # unsigmoid
-  memory_padding_mask_squeeze_bool = tf.cast(tf.reshape(memory_padding_mask, [N_, -1]), tf.bool)
-  counter_memory_padding_mask_squeeze_bool= ~memory_padding_mask_squeeze_bool
-  output_proposals = tf.where(tf.expand_dims(counter_memory_padding_mask_squeeze_bool, -1), float('inf'), output_proposals)
+  memory_padding_mask_squeeze_bool = tf.cast(tf.reshape(memory_padding_mask, [N_, -1]), tf.bool)  # N_, H_*W_
+  output_proposals = tf.where(tf.expand_dims(~memory_padding_mask_squeeze_bool, -1), float('inf'), output_proposals)
   output_proposals = tf.where(~output_proposals_valid, float('inf'), output_proposals)
 
   output_memory = memory
-  output_memory = tf.where(tf.expand_dims(counter_memory_padding_mask_squeeze_bool, -1), 0., output_memory)
+  output_memory = tf.where(tf.expand_dims(~memory_padding_mask_squeeze_bool, -1), 0., output_memory)
   output_memory = tf.where(~output_proposals_valid, 0., output_memory)
 
   return output_memory, output_proposals
@@ -629,10 +622,11 @@ class TransformerDecoder(tf.keras.layers.Layer):
                intermediate_dropout=0.0,
                query_dim=4,
                keep_query_pos=False,
-               query_scale_type='cond_elewise',
                modulate_hw_attn=True,
                bbox_embed_diff_each_layer=False,
                iter_update=True,
+               conditional_query=False,
+               use_detached_boxes_dec_out=False,  # look forward twice
                **kwargs):
     """Initialize a Transformer decoder.
 
@@ -650,15 +644,15 @@ class TransformerDecoder(tf.keras.layers.Layer):
       **kwargs: key word arguemnts passed to tf.keras.layers.Layer.
     """
     super(TransformerDecoder, self).__init__(**kwargs)
-    assert query_scale_type in ['cond_elewise', 'cond_scalar', 'fix_elewise']
     self.num_layers = num_layers
     self.num_attention_heads = num_attention_heads
     self.query_dim = query_dim
     self.keep_query_pos = keep_query_pos
-    self.query_scale_type = query_scale_type
     self.modulate_hw_attn = modulate_hw_attn
     self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
     self.iter_update = iter_update
+    self.conditional_query = conditional_query
+    self.use_detached_boxes_dec_out = use_detached_boxes_dec_out
 
     self._intermediate_size = intermediate_size
     self._activation = activation
@@ -686,14 +680,8 @@ class TransformerDecoder(tf.keras.layers.Layer):
     else:
       self.bbox_embed = BBoxEmbed(hidden_size, prefix="decoder")
 
-    if self.query_scale_type == 'cond_elewise':
-      self.query_scale = MLP(hidden_size, hidden_size, hidden_size, 2)
-    elif self.query_scale_type == 'cond_scalar':
-      self.query_scale = MLP(hidden_size, hidden_size, 1, 2)
-    elif self.query_scale_type == 'fix_elewise':
-      self.query_scale = tf.keras.layers.Embedding(input_dim=self.num_layers, output_dim=hidden_size)
-    else:
-      raise NotImplementedError("Unknown query_scale_type: {}".format(self.query_scale_type))
+    self.query_scale = None
+    self.query_pos_sine_scale = MLP(hidden_size, hidden_size, hidden_size, 2)
     self.ref_point_head = MLP(self.query_dim // 2 * hidden_size, hidden_size, hidden_size, 2)
     if self.modulate_hw_attn:
       self.ref_anchor_head = MLP(hidden_size, hidden_size, 2, 2)
@@ -713,6 +701,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
               attention_initializer=tf_utils.clone_initializer(
                   models.seq2seq_transformer.attention_initializer(
                       input_shape[2])),
+              conditional_query=self.conditional_query,
               name=("layer_%d" % i)))
       if not self.keep_query_pos and i < self.num_layers - 1:
         self.decoder_layers[-1].ca_qpos_proj = None
@@ -726,7 +715,6 @@ class TransformerDecoder(tf.keras.layers.Layer):
         "num_attention_heads": self.num_attention_heads,
         "query_dim": self.query_dim,
         "keep_query_pos": self.keep_query_pos,
-        "query_scale_type": self.query_scale_type,
         "modulate_hw_attn": self.modulate_hw_attn,
         "bbox_embed_diff_each_layer": self.bbox_embed_diff_each_layer,
         "iter_update": self.iter_update,
@@ -736,7 +724,9 @@ class TransformerDecoder(tf.keras.layers.Layer):
         "attention_dropout_rate": self._attention_dropout_rate,
         "use_bias": self._use_bias,
         "norm_epsilon": self._norm_epsilon,
-        "intermediate_dropout": self._intermediate_dropout
+        "intermediate_dropout": self._intermediate_dropout,
+        "conditional_query": self.conditional_query,
+        "use_detached_boxes_dec_out": self.use_detached_boxes_dec_out,
     }
     base_config = super(TransformerDecoder, self).get_config()
     return dict(list(base_config.items()) + list(config.items()))
@@ -787,55 +777,57 @@ class TransformerDecoder(tf.keras.layers.Layer):
     ref_points = [reference_points]
 
     for layer_idx in range(self.num_layers):
-      obj_center = reference_points[..., :self.query_dim]  # [batch_size, num_queries, 4]
-      # get sine embedding for the query vector
-      query_sine_embed = gen_sineembed_for_position(obj_center)
-      query_pos = self.ref_point_head(query_sine_embed)  # [batch_size, num_queries, hidden_size]
+      # TODO: add decoder_query_perturber
 
-      # For the first decoder layer, we do not apply transformation over p_s
-      if self.query_scale_type != 'fix_elewise':
-        if layer_idx == 0:
-          pos_transformation = 1
-        else:
-          pos_transformation = self.query_scale(output_tensor)
-      else:
-        pos_transformation = self.query_scale.embeddings[layer_idx]
+      # get sine embedding for the query vector
+      query_sine_embed = gen_sineembed_for_position(reference_points)
+
+      # conditional query
+      raw_query_pos = self.ref_point_head(query_sine_embed)  # [batch_size, num_queries, hidden_size]
+      pos_scale = self.query_scale(output_tensor) if self.query_scale is not None else 1
+      query_pos = pos_scale * raw_query_pos
 
       # apply transformation
-      query_sine_embed = query_sine_embed[..., :self.hidden_size] * pos_transformation
+      query_sine_embed = query_sine_embed[..., :self.hidden_size] * self.query_pos_sine_scale(output_tensor)
 
       if self.modulate_hw_attn:
         refHW_cond = tf.sigmoid(self.ref_anchor_head(output_tensor))  # bs, nq, 4
         query_sine_embed = tf.concat([
-          query_sine_embed[..., :self.hidden_size // 2] * tf.expand_dims(refHW_cond[..., 1] / obj_center[..., 3], axis=-1),
-          query_sine_embed[..., self.hidden_size // 2:] * tf.expand_dims(refHW_cond[..., 0] / obj_center[..., 2], axis=-1),
+          query_sine_embed[..., :self.hidden_size // 2] * tf.expand_dims(refHW_cond[..., 1] / reference_points[..., 3], axis=-1),
+          query_sine_embed[..., self.hidden_size // 2:] * tf.expand_dims(refHW_cond[..., 0] / reference_points[..., 2], axis=-1),
         ], axis=-1)
 
-      transformer_inputs = [
+      decoder_inputs = [
           output_tensor, memory, cross_attention_mask, self_attention_mask,
           query_pos, memory_pos_embed, query_sine_embed
       ]
       # Gets the cache for decoding.
       if cache is None:
-        output_tensor, _ = self.decoder_layers[layer_idx](transformer_inputs, is_first=(layer_idx == 0))
+        output_tensor, _ = self.decoder_layers[layer_idx](decoder_inputs, is_first=(layer_idx == 0))
       else:
         cache_layer_idx = str(layer_idx)
         output_tensor, cache[cache_layer_idx] = self.decoder_layers[layer_idx](
-            transformer_inputs,
+            decoder_inputs,
             cache=cache[cache_layer_idx],
             decode_loop_step=decode_loop_step,
             is_first=(layer_idx == 0))
 
       if self.iter_update:
+        reference_before_sigmoid = inverse_sigmoid(reference_points)
         if self.bbox_embed_diff_each_layer:
-          tmp = self.bbox_embed[layer_idx](output_tensor)
+          delta_unsig = self.bbox_embed[layer_idx](output_tensor)
         else:
-          tmp = self.bbox_embed(output_tensor)  # bs, nq, 4
-        tmp = tmp + inverse_sigmoid(reference_points)
-        new_reference_points = tf.sigmoid(tmp)
-        if layer_idx != self.num_layers - 1:
-          ref_points.append(new_reference_points)
+          delta_unsig = self.bbox_embed(output_tensor)  # bs, nq, 4
+        outputs_unsig = delta_unsig + reference_before_sigmoid
+        new_reference_points = tf.sigmoid(outputs_unsig)
         reference_points = tf.stop_gradient(new_reference_points)
+
+        if self.use_detached_boxes_dec_out:
+          # look forward once
+          ref_points.append(reference_points)
+        else:
+          # look forward twice
+          ref_points.append(new_reference_points)
 
       if return_all_decoder_outputs:
         decoder_outputs.append(self.output_normalization(output_tensor))
@@ -876,6 +868,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
                intermediate_dropout=0.0,
                attention_initializer=None,
                keep_query_pos=False,
+               conditional_query=False,
                **kwargs):
     """Initialize a Transformer decoder block.
 
@@ -917,6 +910,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     self.dropout_rate = dropout_rate
     self.attention_dropout_rate = attention_dropout_rate
     self.keep_query_pos = keep_query_pos
+    self.conditional_query = conditional_query
     self._kernel_initializer = tf.keras.initializers.get(kernel_initializer)
     self._bias_initializer = tf.keras.initializers.get(bias_initializer)
     self._kernel_regularizer = tf.keras.regularizers.get(kernel_regularizer)
@@ -952,103 +946,107 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         activity_regularizer=self._activity_regularizer,
         kernel_constraint=self._kernel_constraint,
         bias_constraint=self._bias_constraint)
+
     # Self attention.
-    self.sa_qcontent_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="sa_qcontent_proj",
-    )
-    self.sa_qpos_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="sa_qpos_proj",
-    )
-    self.sa_kcontent_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="sa_kcontent_proj",
-    )
-    self.sa_kpos_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="sa_kpos_proj",
-    )
-    self.sa_v_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="sa_v_proj",
-    )
-    self.self_attention = layers.attention.CachedAttention(
+    if self.conditional_query:
+      self.sa_qcontent_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="sa_qcontent_proj",
+      )
+      self.sa_qpos_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="sa_qpos_proj",
+      )
+      self.sa_kcontent_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="sa_kcontent_proj",
+      )
+      self.sa_kpos_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="sa_kpos_proj",
+      )
+      self.sa_v_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="sa_v_proj",
+      )
+    self.self_attn = layers.attention.CachedAttention(
         num_heads=self.num_attention_heads,
         key_dim=self.attention_head_size,
         dropout=self.attention_dropout_rate,
         use_bias=self._use_bias,
         kernel_initializer=self._attention_initializer,
         bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-        name="self_attention",
+        name="self_attn",
         **common_kwargs)
-    self.self_attention_dropout = tf.keras.layers.Dropout(
+    self.dropout2 = tf.keras.layers.Dropout(
         rate=self.dropout_rate)
-    self.self_attention_layer_norm = (
+    self.norm2 = (
         tf.keras.layers.LayerNormalization(
-            name="self_attention_layer_norm",
+            name="norm2",
             axis=-1,
             epsilon=self._norm_epsilon,
             dtype="float32"))
-    # Encoder-decoder attention.
-    self.ca_qcontent_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_qcontent_proj",
-    )
-    self.ca_qpos_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_qpos_proj",
-    )
-    self.ca_kcontent_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_kcontent_proj",
-    )
-    self.ca_kpos_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_kpos_proj",
-    )
-    self.ca_v_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_v_proj",
-    )
-    self.ca_qpos_sine_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_qpos_sine_proj",
-    )
-    self.encdec_attention = self._cross_attention_cls(
+
+    # Cross attention.
+    if self.conditional_query:
+      self.ca_qcontent_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_qcontent_proj",
+      )
+      self.ca_qpos_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_qpos_proj",
+      )
+      self.ca_kcontent_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_kcontent_proj",
+      )
+      self.ca_kpos_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_kpos_proj",
+      )
+      self.ca_v_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_v_proj",
+      )
+      self.ca_qpos_sine_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_qpos_sine_proj",
+      )
+    self.cross_attn = self._cross_attention_cls(
         num_heads=self.num_attention_heads,
         key_dim=self.attention_head_size,
         dropout=self.attention_dropout_rate,
@@ -1059,41 +1057,41 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         name="attention/encdec",
         **common_kwargs)
 
-    self.encdec_attention_dropout = tf.keras.layers.Dropout(
+    self.dropout1 = tf.keras.layers.Dropout(
         rate=self.dropout_rate)
-    self.encdec_attention_layer_norm = (
+    self.norm1 = (
         tf.keras.layers.LayerNormalization(
-            name="attention/encdec_output_layer_norm",
+            name="norm1",
             axis=-1,
             epsilon=self._norm_epsilon,
             dtype="float32"))
 
     # Feed-forward projection.
-    self.intermediate_dense = tf.keras.layers.Dense(
+    self.linear1 = tf.keras.layers.Dense(
       units=self.intermediate_size,
       kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
       bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
       activation=None,  # Linear activation (default)
-      name="intermediate",
+      name="linear1",
     )
     if self.intermediate_activation != "prelu":
-      self.intermediate_activation_layer = tf.keras.layers.Activation(
+      self.activation = tf.keras.layers.Activation(
           self.intermediate_activation)
     else:
-      self.intermediate_activation_layer = tf.keras.layers.PReLU(
+      self.activation = tf.keras.layers.PReLU(
           alpha_initializer=tf.keras.initializers.Constant(0.25))
-    self._intermediate_dropout_layer = tf.keras.layers.Dropout(
+    self.dropout3 = tf.keras.layers.Dropout(
         rate=self._intermediate_dropout)
-    self.output_dense = tf.keras.layers.Dense(
+    self.linear2 = tf.keras.layers.Dense(
       units=hidden_size,
       kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
       bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
       activation=None,  # Linear activation (default)
-      name="output",
+      name="linear2",
     )
-    self.output_dropout = tf.keras.layers.Dropout(rate=self.dropout_rate)
-    self.output_layer_norm = tf.keras.layers.LayerNormalization(
-        name="output_layer_norm",
+    self.dropout4 = tf.keras.layers.Dropout(rate=self.dropout_rate)
+    self.norm3 = tf.keras.layers.LayerNormalization(
+        name="norm3",
         axis=-1,
         epsilon=self._norm_epsilon,
         dtype="float32")
@@ -1144,8 +1142,12 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     """Gets layer objects that can make a Transformer encoder block."""
     return [
         self.self_attention, self.self_attention_layer_norm,
-        self.intermediate_dense, self.output_dense, self.output_layer_norm
+        self.linear1, self.linear2, self.norm3
     ]
+
+  @staticmethod
+  def with_pos_embed(tensor, pos):
+    return tensor if pos is None else tensor + pos
 
   def call(self, inputs, cache=None, decode_loop_step=None, is_first=False):
     # input_tensor is tgt, input_pos_embed is query_pos, memory_pos_embed is pos.
@@ -1153,77 +1155,113 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     # shape: batch_size x num_queries x 256
 
     # ========== Begin of Self-Attention =============
-    q_content = self.sa_qcontent_proj(input_tensor)  # target is the input of the first decoder layer. zero by default.
-    q_pos = self.sa_qpos_proj(input_pos_embed)
-    k_content = self.sa_kcontent_proj(input_tensor)
-    k_pos = self.sa_kpos_proj(input_pos_embed)
-    v = self.sa_v_proj(input_tensor)
+    self_attention_output, cache = self.forward_sa(input_tensor, input_pos_embed, self_attention_mask, cache, decode_loop_step)
 
-    q = q_content + q_pos
-    k = k_content + k_pos
+    # ========== Cross-Attention =============
+    cross_attn_output = self.forward_ca(memory, memory_pos_embed, self_attention_output, input_pos_embed, attention_mask, query_sine_embed, is_first)
 
-    self_attention_output, cache = self.self_attention(
+    # ========== FFN =============
+    layer_output = self.forward_ffn(cross_attn_output)
+    return layer_output, cache
+
+  def forward_sa(self, tgt, tgt_query_pos, self_attn_mask, cache, decode_loop_step):
+    """
+
+    Args:
+      tgt: # bs, nq, d_model
+      tgt_query_pos: pos for query. MLP(Sine(pos))
+
+    Returns:
+
+    """
+    if self.conditional_query:
+      q_content = self.sa_qcontent_proj(
+        tgt)  # target is the input of the first decoder layer. zero by default.
+      q_pos = self.sa_qpos_proj(tgt_query_pos)
+      k_content = self.sa_kcontent_proj(tgt)
+      k_pos = self.sa_kpos_proj(tgt_query_pos)
+
+      q = q_content + q_pos
+      k = k_content + k_pos
+      v = self.sa_v_proj(tgt)
+    else:
+      q = k = self.with_pos_embed(tgt, tgt_query_pos)
+      v = tgt
+    tgt2, cache = self.self_attn(
         query=q,
         key=k,
         value=v,
-        attention_mask=self_attention_mask,
+        attention_mask=self_attn_mask,
         cache=cache,
         decode_loop_step=decode_loop_step)
+    tgt = tgt + self.dropout2(tgt2)
+    tgt = self.norm2(tgt)
 
-    self_attention_output = self.self_attention_layer_norm(
-        input_tensor + self.self_attention_dropout(self_attention_output))
-    # ========== End of Self-Attention =============
+    return tgt, cache
 
-    # ========== Begin of Cross-Attention =============
-    # Apply projections here
-    # shape:  batch_size x num_queries x 256
-    q_content = self.ca_qcontent_proj(self_attention_output)
-    k_content = self.ca_kcontent_proj(memory)
-    v = self.ca_v_proj(memory)
+  def forward_ca(self, memory, memory_pos_embed, self_attention_output, input_pos_embed, attention_mask, query_sine_embed, is_first):
+    if self.conditional_query:
+      q_content = self.ca_qcontent_proj(self_attention_output)
+      k_content = self.ca_kcontent_proj(memory)
+      v = self.ca_v_proj(memory)
 
-    # bs, num_queries, n_model = tf.shape(q_content)
-    q_content_shape = tf.shape(q_content)
-    bs = q_content_shape[0]
-    num_queries = q_content_shape[1]
-    n_model = q_content_shape[2]
+      q_content_shape = tf.shape(q_content)  # bs, num_queries, n_model
+      bs = q_content_shape[0]
+      num_queries = q_content_shape[1]
+      n_model = q_content_shape[2]
+      hw = tf.shape(k_content)[1]
 
-    hw= tf.shape(k_content)[1]
+      k_pos = self.ca_kpos_proj(memory_pos_embed)
 
-    k_pos = self.ca_kpos_proj(memory_pos_embed)
+      if is_first or self.keep_query_pos:
+        q_pos = self.ca_qpos_proj(input_pos_embed)
+        q = q_content + q_pos
+        k = k_content + k_pos
+      else:
+        q = q_content
+        k = k_content
 
-    if is_first or self.keep_query_pos:
-      q_pos = self.ca_qpos_proj(input_pos_embed)
-      q = q_content + q_pos
-      k = k_content + k_pos
-    else:
-      q = q_content
-      k = k_content
+      q = tf.reshape(q, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
+      query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed)
+      query_sine_embed = tf.reshape(query_sine_embed,
+                                    (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
+      q = tf.reshape(tf.concat([q, query_sine_embed], axis=3), (bs, num_queries, n_model * 2))
+      k = tf.reshape(k, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
+      k_pos = tf.reshape(k_pos, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
+      k = tf.reshape(tf.concat([k, k_pos], axis=3), (bs, hw, n_model * 2))
 
-    q = tf.reshape(q, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
-    query_sine_embed = self.ca_qpos_sine_proj(query_sine_embed)
-    query_sine_embed = tf.reshape(query_sine_embed, (bs, num_queries, self.num_attention_heads, n_model // self.num_attention_heads))
-    q = tf.reshape(tf.concat([q, query_sine_embed], axis=3), (bs, num_queries, n_model * 2))
-    k = tf.reshape(k, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
-    k_pos = tf.reshape(k_pos, (bs, hw, self.num_attention_heads, n_model // self.num_attention_heads))
-    k = tf.reshape(tf.concat([k, k_pos], axis=3), (bs, hw, n_model * 2))
-
-    cross_attn_inputs = dict(
+      cross_attn_inputs = dict(
         query=q,
         key=k,
         value=v,
         attention_mask=attention_mask)
-    attention_output = self.encdec_attention(**cross_attn_inputs)
-    attention_output = self.encdec_attention_dropout(attention_output)
+      cross_attn_output = self.cross_attn(**cross_attn_inputs)
+      cross_attn_output = self.dropout1(cross_attn_output)
+      cross_attn_output = self.norm1(
+        self_attention_output + cross_attn_output)
+    else:
+      cross_attn_inputs = dict(
+          query=self.with_pos_embed(self_attention_output, input_pos_embed),
+          key=memory + memory_pos_embed,
+          value=memory,
+          attention_mask=attention_mask)
+      cross_attn_output = self.cross_attn(**cross_attn_inputs)
+      cross_attn_output = self.dropout1(cross_attn_output)
+      cross_attn_output = self.norm1(
+          self_attention_output + cross_attn_output)
 
-    attention_output = self.encdec_attention_layer_norm(
-        self_attention_output + attention_output)
-    # ========== End of Cross-Attention =============
+    return cross_attn_output
 
-    intermediate_output = self.intermediate_dense(attention_output)
-    intermediate_output = self.intermediate_activation_layer(
-        intermediate_output)
-    intermediate_output = self._intermediate_dropout_layer(intermediate_output)
-    layer_output = self.output_dense(intermediate_output)
-    layer_output = self.output_dropout(layer_output)
-    layer_output = self.output_layer_norm(layer_output + attention_output)
-    return layer_output, cache
+  def forward_ffn(self, tgt):
+    """
+    Feed forward network
+    Args:
+      tgt: the output of the cross attention layer
+
+    Returns: the output of the feed forward network
+
+    """
+    tgt2 = self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
+    tgt = tgt + self.dropout4(tgt2)
+    tgt = self.norm3(tgt)
+    return tgt
