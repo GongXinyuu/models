@@ -68,13 +68,13 @@ class TransformerTest(tf.test.TestCase):
         'dropout_rate': 0.0,
         'attention_dropout_rate': 0.0,
         'kernel_initializer': {
-            'class_name': 'GlorotUniform',
+            'class_name': 'HeUniform',
             'config': {
                 'seed': None
             }
         },
         'bias_initializer': {
-            'class_name': 'Zeros',
+            'class_name': 'FanInBiasInitializer',
             'config': {}
         },
         'kernel_regularizer': None,
@@ -86,7 +86,7 @@ class TransformerTest(tf.test.TestCase):
         'norm_epsilon': 1e-12,
         'intermediate_dropout': 0.0,
         'attention_initializer': {
-            'class_name': 'GlorotUniform',
+            'class_name': 'HeUniform',
             'config': {
                 'seed': None
             }
@@ -159,11 +159,14 @@ class TransformerTest(tf.test.TestCase):
         'activation': 'relu',
         'dropout_rate': 0.0,
         'attention_dropout_rate': 0.0,
-        'use_bias': False,
+        'use_bias': True,
         'norm_epsilon': 1e-06,
-        'intermediate_dropout': 0.0
+        'intermediate_dropout': 0.0,
+        'conditional_query': False,
+        'use_detached_boxes_dec_out': False
     }
     self.assertAllEqual(expected_config, config)
+
 
 if __name__ == '__main__':
   tf.test.main()
