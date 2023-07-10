@@ -86,7 +86,7 @@ class Dino(hyperparams.Config):
   bbox_embed_diff_each_layer: bool = False
   random_refpoints_xy: bool = False
   two_stage: bool = True
-  conditional_query: bool = True
+  conditional_query: bool = False
   use_detached_boxes_dec_outputs: bool = False
 
 @dataclasses.dataclass
