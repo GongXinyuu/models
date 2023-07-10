@@ -87,7 +87,7 @@ class Dino(hyperparams.Config):
   focal_loss: bool = Losses.focal_loss
   activation: str = 'prelu'
   two_stage: bool = True
-  conditional_query: bool = True
+  conditional_query: bool = False
   use_detached_boxes_dec_outputs: bool = False
 
 @dataclasses.dataclass
