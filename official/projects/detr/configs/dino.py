@@ -52,6 +52,7 @@ class Losses(hyperparams.Config):
   lambda_giou: float = 2.0
   background_cls_weight: float = 0.1
   l2_weight_decay: float = 1e-4
+  focal_loss: bool = True
   focal_alpha : float = 0.25
   focal_gamma : float = 2.0
 

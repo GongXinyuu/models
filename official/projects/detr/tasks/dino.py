@@ -48,12 +48,12 @@ class DINOTask(detection.DetectionTask):
       name: the task name.
     """
     super().__init__(params=params, logging_dir=logging_dir, name=name)
-
-    self._cls_loss_fn = focal_loss.FocalLoss(
-      alpha=self._task_config.losses.focal_alpha,
-      gamma=self._task_config.losses.focal_gamma,
-      reduction=tf.keras.losses.Reduction.NONE,
-      name='cls_loss')
+    if self._task_config.losses.focal_loss:
+      self._cls_loss_fn = focal_loss.FocalLoss(
+        alpha=self._task_config.losses.focal_alpha,
+        gamma=self._task_config.losses.focal_gamma,
+        reduction=tf.keras.losses.Reduction.NONE,
+        name='cls_loss')
 
   def build_model(self):
     """Build DINO model."""
@@ -80,20 +80,26 @@ class DINOTask(detection.DetectionTask):
                       num_patterns=self._task_config.model.num_patterns,
                       modulate_hw_attn=self._task_config.model.modulate_hw_attn,
                       bbox_embed_diff_each_layer=self._task_config.model.bbox_embed_diff_each_layer,
-                      random_refpoints_xy=self._task_config.model.random_refpoints_xy)
+                      random_refpoints_xy=self._task_config.model.random_refpoints_xy,
+                      focal_loss=self._task_config.losses.focal_loss,)
     return model
 
   def _compute_cost(self, cls_outputs, box_outputs, cls_targets, box_targets):
-    # Approximate classification cost with 1 - prob[target class].
-    # The 1 is a constant that doesn't change the matching, it can be ommitted.
-    # background: 0
-    out_prob = tf.sigmoid(cls_outputs)
-    neg_cost_class = (1 - self._task_config.losses.focal_alpha) * (out_prob ** self._task_config.losses.focal_gamma) \
-                     * (-tf.math.log(1 - out_prob + 1e-8))
-    pos_cost_class = self._task_config.losses.focal_alpha * ((1 - out_prob) ** self._task_config.losses.focal_gamma) \
-                     * (-tf.math.log(out_prob + 1e-8))
-    cls_cost = self._task_config.losses.lambda_cls_cost * \
-               (tf.gather(pos_cost_class, cls_targets, batch_dims=1, axis=-1) - tf.gather(neg_cost_class, cls_targets, batch_dims=1, axis=-1))
+    if self._task_config.losses.focal_loss:
+      # compute cls cost with focal loss
+      out_prob = tf.sigmoid(cls_outputs)  # [batch_size, num_queries, num_classes]
+      neg_cost_class = (1 - self._task_config.losses.focal_alpha) * (out_prob ** self._task_config.losses.focal_gamma) \
+                       * (-tf.math.log(1 - out_prob + 1e-8))
+      pos_cost_class = self._task_config.losses.focal_alpha * ((1 - out_prob) ** self._task_config.losses.focal_gamma) \
+                       * (-tf.math.log(out_prob + 1e-8))
+      cls_cost = self._task_config.losses.lambda_cls_cost * \
+                 (tf.gather(pos_cost_class, cls_targets, batch_dims=1, axis=-1) - tf.gather(neg_cost_class, cls_targets, batch_dims=1, axis=-1))
+    else:
+      # Approximate classification cost with 1 - prob[target class].
+      # The 1 is a constant that doesn't change the matching, it can be ommitted.
+      # background: 0
+      cls_cost = self._task_config.losses.lambda_cls_cost * tf.gather(
+        -tf.nn.softmax(cls_outputs), cls_targets, batch_dims=1, axis=-1)
 
     # Compute the L1 cost between boxes,
     paired_differences = self._task_config.losses.lambda_box * tf.abs(
@@ -147,15 +153,45 @@ class DINOTask(detection.DetectionTask):
     num_boxes = tf.reduce_sum(
         tf.cast(tf.logical_not(background), tf.float32), axis=-1)
 
-    # focal loss for class imbalance.
-    cls_targets_one_hot = tf.one_hot(cls_targets, self._task_config.model.num_classes)
-    # cls_loss shape: [batch_size, num_queries, num_classes]
-    cls_loss = self._task_config.losses.lambda_cls * tf.reduce_sum(self._cls_loss_fn(cls_targets_one_hot, cls_assigned))
+    # Consider doing all reduce once in train_step to speed up.
+    num_boxes_per_replica = tf.reduce_sum(num_boxes)
+    replica_context = tf.distribute.get_replica_context()
+    num_boxes_sum = replica_context.all_reduce(
+        tf.distribute.ReduceOp.SUM,
+        num_boxes_per_replica)
+
+    # class loss
+    if self._task_config.losses.focal_loss:
+      # focal loss for class imbalance.
+      cls_targets_one_hot = tf.one_hot(cls_targets, self._task_config.model.num_classes)
+      # cls_loss shape: [batch_size, num_queries, num_classes]
+      cls_loss = self._task_config.losses.lambda_cls * self._cls_loss_fn(cls_targets_one_hot, cls_assigned)
+      cls_loss = tf.math.divide_no_nan(
+        tf.reduce_sum(cls_loss), num_boxes_sum)
+    else:
+      # Down-weight background to account for class imbalance.
+      xentropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=cls_targets, logits=cls_assigned)
+      cls_loss = self._task_config.losses.lambda_cls * tf.where(
+        background, self._task_config.losses.background_cls_weight * xentropy,
+        xentropy)
+      cls_weights = tf.where(
+        background,
+        self._task_config.losses.background_cls_weight * tf.ones_like(cls_loss),
+        tf.ones_like(cls_loss))
+      cls_weights_per_replica = tf.reduce_sum(cls_weights)
+      cls_weights_sum = replica_context.all_reduce(
+        tf.distribute.ReduceOp.SUM,
+        cls_weights_per_replica)
+      cls_loss = tf.math.divide_no_nan(
+        tf.reduce_sum(cls_loss), cls_weights_sum)
 
     # Box loss is only calculated on non-background class.
     l_1 = tf.reduce_sum(tf.abs(box_assigned - box_targets), axis=-1)
     box_loss = self._task_config.losses.lambda_box * tf.where(
         background, tf.zeros_like(l_1), l_1)
+    box_loss = tf.math.divide_no_nan(
+        tf.reduce_sum(box_loss), num_boxes_sum)
 
     # Giou loss is only calculated on non-background class.
     giou = tf.linalg.diag_part(1.0 - box_ops.bbox_generalized_overlap(
@@ -164,18 +200,6 @@ class DINOTask(detection.DetectionTask):
         ))
     giou_loss = self._task_config.losses.lambda_giou * tf.where(
         background, tf.zeros_like(giou), giou)
-
-    # Consider doing all reduce once in train_step to speed up.
-    num_boxes_per_replica = tf.reduce_sum(num_boxes)
-    replica_context = tf.distribute.get_replica_context()
-    num_boxes_sum = replica_context.all_reduce(
-        tf.distribute.ReduceOp.SUM,
-        num_boxes_per_replica)
-
-    cls_loss = tf.math.divide_no_nan(
-      tf.reduce_sum(cls_loss), num_boxes_sum)
-    box_loss = tf.math.divide_no_nan(
-        tf.reduce_sum(box_loss), num_boxes_sum)
     giou_loss = tf.math.divide_no_nan(
         tf.reduce_sum(giou_loss), num_boxes_sum)
 

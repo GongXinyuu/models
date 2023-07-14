@@ -148,6 +148,7 @@ class DINO(tf.keras.Model):
                modulate_hw_attn=True,
                bbox_embed_diff_each_layer=False,
                random_refpoints_xy=False,
+               focal_loss=True,
                **kwargs):
     super().__init__(**kwargs)
     assert query_dim in [2, 4]
@@ -166,6 +167,7 @@ class DINO(tf.keras.Model):
     self._modulate_hw_attn = modulate_hw_attn
     self._bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
     self._random_refpoints_xy = random_refpoints_xy
+    self._focal_loss = focal_loss
     if hidden_size % 2 != 0:
       raise ValueError("hidden_size must be a multiple of 2.")
     self._backbone = backbone
@@ -201,7 +203,8 @@ class DINO(tf.keras.Model):
     self._class_embed = tf.keras.layers.Dense(
         self._num_classes,
         kernel_initializer=tf.keras.initializers.HeUniform(),
-        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
+        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01)
+        if self._focal_loss else transformer_dino.FanInBiasInitializer(),
         name="dino/cls_dense")
 
     self._sigmoid = tf.keras.layers.Activation("sigmoid")
