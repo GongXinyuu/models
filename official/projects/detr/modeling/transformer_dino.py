@@ -571,10 +571,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
                norm_epsilon=1e-6,
                intermediate_dropout=0.0,
                query_dim=4,
-               keep_query_pos=False,
-               query_scale_type='cond_elewise',
                modulate_hw_attn=True,
-               bbox_embed_diff_each_layer=False,
                iter_update=True,
                **kwargs):
     """Initialize a Transformer decoder.
@@ -593,14 +590,10 @@ class TransformerDecoder(tf.keras.layers.Layer):
       **kwargs: key word arguemnts passed to tf.keras.layers.Layer.
     """
     super(TransformerDecoder, self).__init__(**kwargs)
-    assert query_scale_type in ['cond_elewise', 'cond_scalar', 'fix_elewise']
     self.num_layers = num_layers
     self.num_attention_heads = num_attention_heads
     self.query_dim = query_dim
-    self.keep_query_pos = keep_query_pos
-    self.query_scale_type = query_scale_type
     self.modulate_hw_attn = modulate_hw_attn
-    self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
     self.iter_update = iter_update
 
     self._intermediate_size = intermediate_size
@@ -624,19 +617,9 @@ class TransformerDecoder(tf.keras.layers.Layer):
           "heads (%d)" % (hidden_size, self.num_attention_heads))
     self.hidden_size = hidden_size
     self.attention_head_size = int(hidden_size) // self.num_attention_heads
-    if self.bbox_embed_diff_each_layer:
-      self.bbox_embed = [BBoxEmbed(hidden_size, prefix=f"decoder_l{l_idx}") for l_idx in range(self._num_decoder_layers)]
-    else:
-      self.bbox_embed = BBoxEmbed(hidden_size, prefix="decoder")
+    self.bbox_embed = BBoxEmbed(hidden_size, prefix="decoder")
 
-    if self.query_scale_type == 'cond_elewise':
-      self.query_scale = MLP(hidden_size, hidden_size, hidden_size, 2)
-    elif self.query_scale_type == 'cond_scalar':
-      self.query_scale = MLP(hidden_size, hidden_size, 1, 2)
-    elif self.query_scale_type == 'fix_elewise':
-      self.query_scale = tf.keras.layers.Embedding(input_dim=self.num_layers, output_dim=hidden_size)
-    else:
-      raise NotImplementedError("Unknown query_scale_type: {}".format(self.query_scale_type))
+    self.query_scale = MLP(hidden_size, hidden_size, hidden_size, 2)
     self.ref_point_head = MLP(self.query_dim // 2 * hidden_size, hidden_size, hidden_size, 2)
     if self.modulate_hw_attn:
       self.ref_anchor_head = MLP(hidden_size, hidden_size, 2, 2)
@@ -656,9 +639,8 @@ class TransformerDecoder(tf.keras.layers.Layer):
               attention_initializer=tf_utils.clone_initializer(
                   models.seq2seq_transformer.attention_initializer(
                       input_shape[2])),
+              is_first=(i == 0),
               name=("layer_%d" % i)))
-      if not self.keep_query_pos and i < self.num_layers - 1:
-        self.decoder_layers[-1].ca_qpos_proj = None
     self.output_normalization = tf.keras.layers.LayerNormalization(
         epsilon=self._norm_epsilon, dtype="float32")
     super(TransformerDecoder, self).build(input_shape)
@@ -668,10 +650,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
         "num_layers": self.num_layers,
         "num_attention_heads": self.num_attention_heads,
         "query_dim": self.query_dim,
-        "keep_query_pos": self.keep_query_pos,
-        "query_scale_type": self.query_scale_type,
         "modulate_hw_attn": self.modulate_hw_attn,
-        "bbox_embed_diff_each_layer": self.bbox_embed_diff_each_layer,
         "iter_update": self.iter_update,
         "intermediate_size": self._intermediate_size,
         "activation": self._activation,
@@ -736,13 +715,10 @@ class TransformerDecoder(tf.keras.layers.Layer):
       query_pos = self.ref_point_head(query_sine_embed)  # [batch_size, num_queries, hidden_size]
 
       # For the first decoder layer, we do not apply transformation over p_s
-      if self.query_scale_type != 'fix_elewise':
-        if layer_idx == 0:
-          pos_transformation = 1
-        else:
-          pos_transformation = self.query_scale(output_tensor)
+      if layer_idx == 0:
+        pos_transformation = 1
       else:
-        pos_transformation = self.query_scale.embeddings[layer_idx]
+        pos_transformation = self.query_scale(output_tensor)
 
       # apply transformation
       query_sine_embed = query_sine_embed[..., :self.hidden_size] * pos_transformation
@@ -770,10 +746,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
             is_first=(layer_idx == 0))
 
       if self.iter_update:
-        if self.bbox_embed_diff_each_layer:
-          tmp = self.bbox_embed[layer_idx](output_tensor)
-        else:
-          tmp = self.bbox_embed(output_tensor)  # bs, nq, 4
+        tmp = self.bbox_embed(output_tensor)  # bs, nq, 4
         tmp = tmp + inverse_sigmoid(reference_points)
         new_reference_points = tf.sigmoid(tmp)
         if layer_idx != self.num_layers - 1:
@@ -818,7 +791,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
                norm_epsilon=1e-12,
                intermediate_dropout=0.0,
                attention_initializer=None,
-               keep_query_pos=False,
+               is_first=False,
                **kwargs):
     """Initialize a Transformer decoder block.
 
@@ -859,7 +832,6 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
       self.intermediate_activation = "prelu"
     self.dropout_rate = dropout_rate
     self.attention_dropout_rate = attention_dropout_rate
-    self.keep_query_pos = keep_query_pos
     self._kernel_initializer = tf.keras.initializers.get(kernel_initializer)
     self._bias_initializer = tf.keras.initializers.get(bias_initializer)
     self._kernel_regularizer = tf.keras.regularizers.get(kernel_regularizer)
@@ -870,6 +842,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
     self._use_bias = use_bias
     self._norm_epsilon = norm_epsilon
     self._intermediate_dropout = intermediate_dropout
+    self._is_first = is_first
     if attention_initializer:
       self._attention_initializer = tf.keras.initializers.get(
           attention_initializer)
@@ -956,13 +929,16 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
       activation=None,  # Linear activation (default)
       name="ca_qcontent_proj",
     )
-    self.ca_qpos_proj = tf.keras.layers.Dense(
-      units=hidden_size,
-      kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
-      bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
-      activation=None,  # Linear activation (default)
-      name="ca_qpos_proj",
-    )
+    if self._is_first:
+      self.ca_qpos_proj = tf.keras.layers.Dense(
+        units=hidden_size,
+        kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
+        bias_initializer=tf_utils.clone_initializer(self._bias_initializer),
+        activation=None,  # Linear activation (default)
+        name="ca_qpos_proj",
+      )
+    else:
+      self.ca_qpos_proj = None
     self.ca_kcontent_proj = tf.keras.layers.Dense(
       units=hidden_size,
       kernel_initializer=tf_utils.clone_initializer(self._kernel_initializer),
@@ -1078,7 +1054,6 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
         "attention_initializer": tf_utils.serialize_initializer(
             self._attention_initializer, use_legacy_format=True
         ),
-        "keep_query_pos": self.keep_query_pos,
     }
     base_config = super().get_config()
     return dict(list(base_config.items()) + list(config.items()))
@@ -1134,7 +1109,7 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
 
     k_pos = self.ca_kpos_proj(memory_pos_embed)
 
-    if is_first or self.keep_query_pos:
+    if is_first:
       q_pos = self.ca_qpos_proj(input_pos_embed)
       q = q_content + q_pos
       k = k_content + k_pos

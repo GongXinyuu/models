@@ -74,18 +74,18 @@ class DINOTask(detection.DetectionTask):
                       self._task_config.model.num_encoder_layers,
                       self._task_config.model.num_decoder_layers,
                       self._task_config.model.dropout_rate,
+                      pe_temperature=self._task_config.model.pe_temperature,
                       query_dim=self._task_config.model.query_dim,
-                      keep_query_pos=self._task_config.model.keep_query_pos,
-                      query_scale_type=self._task_config.model.query_scale_type,
                       num_patterns=self._task_config.model.num_patterns,
                       modulate_hw_attn=self._task_config.model.modulate_hw_attn,
-                      bbox_embed_diff_each_layer=self._task_config.model.bbox_embed_diff_each_layer,
                       random_refpoints_xy=self._task_config.model.random_refpoints_xy,
-                      focal_loss=self._task_config.losses.focal_loss,)
+                      focal_loss=self._task_config.losses.focal_loss,
+                      activation=self._task_config.model.activation)
     return model
 
   def _compute_cost(self, cls_outputs, box_outputs, cls_targets, box_targets):
     if self._task_config.losses.focal_loss:
+      # TODO: the value of focal loss is unbounded.
       # compute cls cost with focal loss
       out_prob = tf.sigmoid(cls_outputs)  # [batch_size, num_queries, num_classes]
       neg_cost_class = (1 - self._task_config.losses.focal_alpha) * (out_prob ** self._task_config.losses.focal_gamma) \

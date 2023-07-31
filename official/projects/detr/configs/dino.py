@@ -47,12 +47,12 @@ class DataConfig(cfg.DataConfig):
 class Losses(hyperparams.Config):
   class_offset: int = 0
   lambda_cls: float = 1.0
-  lambda_cls_cost: float = 2.0
+  lambda_cls_cost: float = 1.0
   lambda_box: float = 5.0
   lambda_giou: float = 2.0
   background_cls_weight: float = 0.1
   l2_weight_decay: float = 1e-4
-  focal_loss: bool = True
+  focal_loss: bool = False
   focal_alpha : float = 0.25
   focal_gamma : float = 2.0
 
@@ -73,12 +73,11 @@ class Dino(hyperparams.Config):
   dropout_rate: int = 0.1
   pe_temperature: float = 20.0
   query_dim: int = 4
-  keep_query_pos: bool = False
-  query_scale_type: str = 'cond_elewise'
-  num_patterns: int =0
+  num_patterns: int = 0
   modulate_hw_attn: bool = True
-  bbox_embed_diff_each_layer: bool = False
   random_refpoints_xy: bool = False
+  focal_loss: bool = Losses.focal_loss
+  activation: str = 'prelu'
 
 @dataclasses.dataclass
 class DinoTask(cfg.TaskConfig):

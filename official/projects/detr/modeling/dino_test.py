@@ -44,11 +44,8 @@ class DinoTest(tf.test.TestCase):
         'num_decoder_layers': 2,
         'dropout_rate': 0.5,
         "query_dim": 4,
-        "keep_query_pos": False,
-        "query_scale_type": 'cond_elewise',
         "modulate_hw_attn": True,
         "num_patterns": 0,
-        "bbox_embed_diff_each_layer": False,
     }
     detr_model = dino.DINOTransformer.from_config(config)
     retrieved_config = detr_model.get_config()
@@ -67,11 +64,8 @@ class DinoTest(tf.test.TestCase):
         'dropout_rate': 0.5,
         "pe_temperature": 20.0,
         "query_dim": 4,
-        "keep_query_pos": False,
-        "query_scale_type": 'cond_elewise',
         "modulate_hw_attn": True,
         "num_patterns": 0,
-        "bbox_embed_diff_each_layer": False,
         "random_refpoints_xy": False,
     }
     detr_model = dino.DINO.from_config(config)

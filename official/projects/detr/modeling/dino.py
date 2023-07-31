@@ -142,13 +142,11 @@ class DINO(tf.keras.Model):
                dropout_rate=0.1,
                pe_temperature=20.0,
                query_dim=4,
-               keep_query_pos=False,
-               query_scale_type='cond_elewise',
                num_patterns=0,
                modulate_hw_attn=True,
-               bbox_embed_diff_each_layer=False,
                random_refpoints_xy=False,
-               focal_loss=True,
+               focal_loss=False,
+               activation="prelu",
                **kwargs):
     super().__init__(**kwargs)
     assert query_dim in [2, 4]
@@ -161,21 +159,20 @@ class DINO(tf.keras.Model):
     self._dropout_rate = dropout_rate
     self._pe_temperature = pe_temperature
     self._query_dim = query_dim
-    self._keep_query_pos = keep_query_pos
-    self._query_scale_type = query_scale_type
     self._num_patterns = num_patterns
     self._modulate_hw_attn = modulate_hw_attn
-    self._bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
     self._random_refpoints_xy = random_refpoints_xy
     self._focal_loss = focal_loss
     if hidden_size % 2 != 0:
       raise ValueError("hidden_size must be a multiple of 2.")
     self._backbone = backbone
     self._backbone_endpoint_name = backbone_endpoint_name
+    self._activation = activation
 
   def build(self, input_shape=None):
     self._input_proj = tf.keras.layers.Conv2D(
-        self._hidden_size, 1, name="dino/conv2d")
+        self._hidden_size, 1, kernel_initializer=tf.keras.initializers.HeUniform(),
+        bias_initializer=transformer_dino.FanInBiasInitializer(), name="dino/conv2d")
     self._build_detection_decoder()
     super().build(input_shape)
 
@@ -186,11 +183,9 @@ class DINO(tf.keras.Model):
         num_decoder_layers=self._num_decoder_layers,
         dropout_rate=self._dropout_rate,
         query_dim=self._query_dim,
-        keep_query_pos=self._keep_query_pos,
-        query_scale_type=self._query_scale_type,
         num_patterns=self._num_patterns,
         modulate_hw_attn=self._modulate_hw_attn,
-        bbox_embed_diff_each_layer=self._bbox_embed_diff_each_layer)
+        activation=self._activation)
 
     self.refpoint_embed = self.add_weight(
       "dino/refpoint_embeddings",
@@ -229,12 +224,11 @@ class DINO(tf.keras.Model):
         "dropout_rate": self._dropout_rate,
         "pe_temperature": self._pe_temperature,
         "query_dim": self._query_dim,
-        "keep_query_pos": self._keep_query_pos,
-        "query_scale_type": self._query_scale_type,
         "num_patterns": self._num_patterns,
         "modulate_hw_attn": self._modulate_hw_attn,
-        "bbox_embed_diff_each_layer": self._bbox_embed_diff_each_layer,
         "random_refpoints_xy": self._random_refpoints_xy,
+        "focal_loss": self._focal_loss,
+        "activation": self._activation
     }
 
   @classmethod
@@ -278,15 +272,9 @@ class DINO(tf.keras.Model):
     out_list = []
     for layer_idx, (decoded, reference) in enumerate(zip(decoded_list, reference_list)):
       output_class = self._class_embed(decoded)  # bs, num_queries, num_classes
-
-      if not self._bbox_embed_diff_each_layer:
-        reference_before_sigmoid = transformer_dino.inverse_sigmoid(reference)
-        tmp = self._bbox_embed(decoded)
-        output_coord = self._sigmoid(tmp + reference_before_sigmoid)
-      else:
-        reference_before_sigmoid = transformer_dino.inverse_sigmoid(reference)
-        tmp = self._bbox_embed[layer_idx](decoded)
-        output_coord = self._sigmoid(tmp + reference_before_sigmoid)
+      reference_before_sigmoid = transformer_dino.inverse_sigmoid(reference)
+      tmp = self._bbox_embed(decoded)
+      output_coord = self._sigmoid(tmp + reference_before_sigmoid)
 
       out = {"cls_outputs": output_class, "box_outputs": output_coord}
       # if not training:
@@ -300,21 +288,17 @@ class DINOTransformer(tf.keras.layers.Layer):
   """Encoder and Decoder of DINO."""
 
   def __init__(self, num_encoder_layers=6, num_decoder_layers=6,
-               dropout_rate=0.1, query_dim=4, keep_query_pos=False,
-               query_scale_type='cond_elewise', num_patterns=0,
-               modulate_hw_attn=True, bbox_embed_diff_each_layer=False, **kwargs):
+               dropout_rate=0.1, query_dim=4, num_patterns=0,
+               modulate_hw_attn=True, activation='prelu', **kwargs):
     super().__init__(**kwargs)
-    assert query_scale_type in ['cond_elewise', 'cond_scalar', 'fix_elewise']
 
     self._dropout_rate = dropout_rate
     self._num_encoder_layers = num_encoder_layers
     self._num_decoder_layers = num_decoder_layers
     self._query_dim = query_dim
-    self._keep_query_pos = keep_query_pos
-    self._query_scale_type = query_scale_type
     self._modulate_hw_attn = modulate_hw_attn
     self._num_patterns = num_patterns
-    self._bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
+    self._activation = activation
 
   def build(self, input_shape=None):
     pos_embed_tensor_shape = tf.TensorShape(input_shape['pos_embed'])
@@ -329,7 +313,8 @@ class DINOTransformer(tf.keras.layers.Layer):
           dropout_rate=self._dropout_rate,
           intermediate_dropout=self._dropout_rate,
           norm_first=False,
-          num_layers=self._num_encoder_layers)
+          num_layers=self._num_encoder_layers,
+          activation=self._activation)
     else:
       self._encoder = None
 
@@ -339,10 +324,8 @@ class DINOTransformer(tf.keras.layers.Layer):
         intermediate_dropout=self._dropout_rate,
         num_layers=self._num_decoder_layers,
         query_dim=self._query_dim,
-        keep_query_pos=self._keep_query_pos,
-        query_scale_type=self._query_scale_type,
         modulate_hw_attn=self._modulate_hw_attn,
-        bbox_embed_diff_each_layer=self._bbox_embed_diff_each_layer)
+        activation=self._activation)
 
     if self._num_patterns > 0:
       # self._patterns = tf.keras.layers.Embedding(self._num_patterns, hidden_size)
@@ -360,12 +343,9 @@ class DINOTransformer(tf.keras.layers.Layer):
         "num_decoder_layers": self._num_decoder_layers,
         "dropout_rate": self._dropout_rate,
         "query_dim": self._query_dim,
-        "keep_query_pos": self._keep_query_pos,
-        "query_scale_type": self._query_scale_type,
         "modulate_hw_attn": self._modulate_hw_attn,
         "num_patterns": self._num_patterns,
-        "bbox_embed_diff_each_layer": self._bbox_embed_diff_each_layer,
-    }
+        "activation": self._activation}
 
   def call(self, inputs):
     sources = inputs["inputs"]

@@ -62,8 +62,8 @@ class DinoTest(tf.test.TestCase):
     config = dino_cfg.DinoTask(
         model=dino_cfg.Dino(
             input_size=[1333, 1333, 3],
-            num_encoder_layers=1,
-            num_decoder_layers=1,
+            num_encoder_layers=2,
+            num_decoder_layers=2,
             num_classes=81,
             backbone=backbones.Backbone(
                 type='resnet',
@@ -104,8 +104,8 @@ class DinoTest(tf.test.TestCase):
     config = dino_cfg.DinoTask(
         model=dino_cfg.Dino(
             input_size=[1333, 1333, 3],
-            num_encoder_layers=1,
-            num_decoder_layers=1,
+            num_encoder_layers=2,
+            num_decoder_layers=2,
             num_classes=81,
             backbone=backbones.Backbone(
                 type='resnet',

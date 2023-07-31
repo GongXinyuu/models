@@ -91,7 +91,6 @@ class TransformerTest(tf.test.TestCase):
                 'seed': None
             }
         },
-      "keep_query_pos": False,
     }
     self.assertAllEqual(expected_config, config)
 
@@ -104,19 +103,13 @@ class TransformerTest(tf.test.TestCase):
     num_attention_heads = 2
     intermediate_size = 256
     query_dim = 4
-    keep_query_pos = False
-    query_scale_type = 'cond_elewise'
     modulate_hw_attn = True
-    bbox_embed_diff_each_layer = False
     model = transformer_dino.TransformerDecoder(
         num_layers=num_layers,
         num_attention_heads=num_attention_heads,
         intermediate_size=intermediate_size,
         query_dim=query_dim,
-        keep_query_pos=keep_query_pos,
-        query_scale_type=query_scale_type,
-        modulate_hw_attn=modulate_hw_attn,
-        bbox_embed_diff_each_layer=bbox_embed_diff_each_layer,
+        modulate_hw_attn=modulate_hw_attn
     )
     input_tensor = tf.ones((batch_size, sequence_length, feature_size))
     memory = tf.ones((batch_size, memory_length, feature_size))
@@ -160,10 +153,7 @@ class TransformerTest(tf.test.TestCase):
         'num_layers': 2,
         'num_attention_heads': 2,
         "query_dim": 4,
-        "keep_query_pos": False,
-        "query_scale_type": 'cond_elewise',
         "modulate_hw_attn": True,
-        "bbox_embed_diff_each_layer": False,
         "iter_update": True,
         'intermediate_size': 256,
         'activation': 'relu',
