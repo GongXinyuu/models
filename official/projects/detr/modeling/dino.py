@@ -146,7 +146,7 @@ class DINO(tf.keras.Model):
                modulate_hw_attn=True,
                random_refpoints_xy=False,
                focal_loss=False,
-               activation="prelu",
+               activation="relu",
                two_stage=True,
                conditional_query=False,
                use_detached_boxes_dec_out=False,  # look forward twice = False
@@ -196,7 +196,8 @@ class DINO(tf.keras.Model):
         two_stage=self._two_stage,
         conditional_query=self._conditional_query,
         use_detached_boxes_dec_out=self._use_detached_boxes_dec_out,
-        activation=self._activation)
+        activation=self._activation,
+        focal_loss=self._focal_loss)
 
     if not self._two_stage:
       self.refpoint_embed = self.add_weight(
@@ -268,9 +269,6 @@ class DINO(tf.keras.Model):
     batch_size = tf.shape(inputs)[0]
     features = self._backbone(inputs)[self._backbone_endpoint_name]
     shape = tf.shape(features)  # [batch, height, width, channels]
-    height = shape[1]
-    width = shape[2]
-    spatial_shape = [height, width]
     mask = self._generate_image_mask(inputs, shape[1: 3])  # [batch, height, width]
     if self.refpoint_embed is not None:
       embedweight = tf.tile(tf.expand_dims(self.refpoint_embed, axis=0), (batch_size, 1, 1))  # bs, num_queries, query_dim
@@ -292,7 +290,6 @@ class DINO(tf.keras.Model):
             embedweight,
         "pos_embed": pos_embed,
         "mask": mask,
-        "spatial_shape": spatial_shape,
     })
 
     out_list = []
@@ -327,7 +324,7 @@ class DINOTransformer(tf.keras.layers.Layer):
                num_patterns=0, modulate_hw_attn=True,
                two_stage=True, two_stage_learn_wh=False, num_queries=100,
                conditional_query=False, use_detached_boxes_dec_out=False,
-                activation='prelu', **kwargs):
+               activation='relu', focal_loss=False, **kwargs):
     super().__init__(**kwargs)
 
     self._num_classes = num_classes
@@ -338,6 +335,7 @@ class DINOTransformer(tf.keras.layers.Layer):
     self._modulate_hw_attn = modulate_hw_attn
     self._num_patterns = num_patterns
     self._activation = activation
+    self._focal_loss = focal_loss
     self._two_stage = two_stage
     self._two_stage_learn_wh = two_stage_learn_wh
     self._num_queries = num_queries
@@ -383,15 +381,24 @@ class DINOTransformer(tf.keras.layers.Layer):
 
     if self._two_stage:
       self.enc_output = tf.keras.layers.Dense(hidden_size, kernel_initializer=tf.keras.initializers.HeUniform(),
-      bias_initializer=transformer_dino.FanInBiasInitializer())
+                                              bias_initializer=transformer_dino.FanInBiasInitializer())
       self.enc_output_norm = tf.keras.layers.LayerNormalization(epsilon=1e-5)
 
       self.enc_out_bbox_embed = transformer_dino.BBoxEmbed(self._hidden_size, prefix=f'dino/enc_out_bbox_embed')
       self.enc_out_class_embed = tf.keras.layers.Dense(
         self._num_classes,
         kernel_initializer=tf.keras.initializers.HeUniform(),
-        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01),
+        bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01)
+        if self._focal_loss else transformer_dino.FanInBiasInitializer(),
         name="dino/enc_out_cls_dense")
+      self.tgt_embed = None
+    else:
+      self.tgt_embed = self.add_weight(
+        "dino/tgt_embeddings",
+        shape=[self._num_queries, self._hidden_size],
+        initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+        dtype=tf.float32
+      )
 
     super().build(input_shape)
 
@@ -405,6 +412,7 @@ class DINOTransformer(tf.keras.layers.Layer):
         "modulate_hw_attn": self._modulate_hw_attn,
         "num_patterns": self._num_patterns,
         "activation": self._activation,
+        "focal_loss": self._focal_loss,
         "two_stage": self._two_stage,
         "two_stage_learn_wh": self._two_stage_learn_wh,
         "num_queries": self._num_queries,
@@ -427,8 +435,7 @@ class DINOTransformer(tf.keras.layers.Layer):
       memory = sources
 
     if self._two_stage:
-      input_hw = None
-      output_memory, output_proposals = transformer_dino.gen_encoder_output_proposals(memory, mask, input_hw)
+      output_memory, output_proposals = transformer_dino.gen_encoder_output_proposals(memory, mask)
       output_memory = self.enc_output_norm(self.enc_output(output_memory))
       enc_outputs_class_unselected = self.enc_out_class_embed(output_memory)  # bs, \sum{hw}, nclass
       enc_outputs_coord_unselected = self.enc_out_bbox_embed(output_memory) + output_proposals  # (bs, \sum{hw}, 4) unsigmoid
@@ -453,8 +460,8 @@ class DINOTransformer(tf.keras.layers.Layer):
       target_shape = tf.shape(refpoint_embed)
 
       bs = target_shape[0]
-      num_queries = target_shape[1]
-      tgt = tf.zeros((bs, num_queries, self._hidden_size))
+      tgt = tf.tile(tf.expand_dims(self.tgt_embed, axis=0),
+                            (bs, 1, 1))  # bs, num_queries, query_dim
       init_box_proposal = tf.math.sigmoid(refpoint_embed)
 
     cross_attention_mask = tf.tile(

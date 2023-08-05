@@ -143,7 +143,6 @@ def gen_encoder_output_proposals(memory, memory_padding_mask, learnedwh=None):
       - output_proposals: bs, \sum{hw}, 4
   """
   N_ = tf.shape(memory)[0]
-  # proposals = []
   lvl = 3  # TODO: check
   H_ = tf.shape(memory_padding_mask)[1]
   W_ = tf.shape(memory_padding_mask)[2]
@@ -673,7 +672,6 @@ class TransformerDecoder(tf.keras.layers.Layer):
     self.attention_head_size = int(hidden_size) // self.num_attention_heads
     self.bbox_embed = BBoxEmbed(hidden_size, prefix="decoder")
 
-    self.query_scale = None
     self.query_pos_sine_scale = MLP(hidden_size, hidden_size, hidden_size, 2)
     self.ref_point_head = MLP(self.query_dim // 2 * hidden_size, hidden_size, hidden_size, 2)
     if self.modulate_hw_attn:
@@ -771,13 +769,8 @@ class TransformerDecoder(tf.keras.layers.Layer):
 
       # get sine embedding for the query vector
       query_sine_embed = gen_sineembed_for_position(reference_points)
+      query_pos = self.ref_point_head(query_sine_embed)  # [batch_size, num_queries, hidden_size]
 
-      # conditional query
-      raw_query_pos = self.ref_point_head(query_sine_embed)  # [batch_size, num_queries, hidden_size]
-      pos_scale = self.query_scale(output_tensor) if self.query_scale is not None else 1
-      query_pos = pos_scale * raw_query_pos
-
-      # apply transformation
       query_sine_embed = query_sine_embed[..., :self.hidden_size] * self.query_pos_sine_scale(output_tensor)
 
       if self.modulate_hw_attn:
@@ -1140,14 +1133,20 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
 
   def call(self, inputs, cache=None, decode_loop_step=None, is_first=False):
     # input_tensor is tgt, input_pos_embed is query_pos, memory_pos_embed is pos.
-    input_tensor, memory, attention_mask, self_attention_mask, input_pos_embed, memory_pos_embed, query_sine_embed = inputs
+    (input_tensor, memory, cross_attention_mask, self_attention_mask,
+     input_pos_embed, memory_pos_embed, query_sine_embed) = inputs
     # shape: batch_size x num_queries x 256
 
-    # ========== Begin of Self-Attention =============
-    self_attention_output, cache = self.forward_sa(input_tensor, input_pos_embed, self_attention_mask, cache, decode_loop_step)
+    # ==========Self-Attention =============
+    self_attention_output, cache = self.forward_sa(
+      tgt=input_tensor, tgt_query_pos=input_pos_embed, self_attn_mask=self_attention_mask, cache=cache,
+      decode_loop_step=decode_loop_step)
 
     # ========== Cross-Attention =============
-    cross_attn_output = self.forward_ca(memory, memory_pos_embed, self_attention_output, input_pos_embed, attention_mask, query_sine_embed, is_first)
+    cross_attn_output = self.forward_ca(
+      memory=memory, memory_pos_embed=memory_pos_embed, self_attention_output=self_attention_output,
+      input_pos_embed=input_pos_embed, attention_mask=cross_attention_mask,
+      query_sine_embed=query_sine_embed, is_first=is_first)
 
     # ========== FFN =============
     layer_output = self.forward_ffn(cross_attn_output)
@@ -1188,7 +1187,8 @@ class TransformerDecoderBlock(tf.keras.layers.Layer):
 
     return tgt, cache
 
-  def forward_ca(self, memory, memory_pos_embed, self_attention_output, input_pos_embed, attention_mask, query_sine_embed, is_first):
+  def forward_ca(self, memory, memory_pos_embed, self_attention_output,
+                 input_pos_embed, attention_mask, query_sine_embed, is_first):
     if self.conditional_query:
       q_content = self.ca_qcontent_proj(self_attention_output)
       k_content = self.ca_kcontent_proj(memory)

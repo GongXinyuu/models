@@ -78,17 +78,17 @@ class Dino(hyperparams.Config):
       type='resnet', resnet=backbones.ResNet(model_id=50, bn_trainable=False))
   norm_activation: common.NormActivation = common.NormActivation()
   backbone_endpoint_name: str = '5'
-  dropout_rate: int = 0.1
+  dropout_rate: int = 0.0
   pe_temperature: float = 20.0
   query_dim: int = 4
   num_patterns: int = 0
   modulate_hw_attn: bool = True
   random_refpoints_xy: bool = False
   focal_loss: bool = Losses.focal_loss
-  activation: str = 'prelu'
+  activation: str = 'relu'
   two_stage: bool = True
   conditional_query: bool = False
-  use_detached_boxes_dec_outputs: bool = False
+  use_detached_boxes_dec_out: bool = False  # look forward once
 
 @dataclasses.dataclass
 class DinoTask(cfg.TaskConfig):
