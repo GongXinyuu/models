@@ -83,7 +83,8 @@ class DINOTask(detection.DetectionTask):
                       activation=self._task_config.model.activation,
                       two_stage=self._task_config.model.two_stage,
                       conditional_query=self._task_config.model.conditional_query,
-                      use_detached_boxes_dec_out=self._task_config.model.use_detached_boxes_dec_out)
+                      use_detached_boxes_dec_out=self._task_config.model.use_detached_boxes_dec_out,
+                      learnable_tgt_init=self._task_config.model.learnable_tgt_init)
     return model
 
   def _compute_cost(self, cls_outputs, box_outputs, cls_targets, box_targets):
@@ -244,12 +245,13 @@ class DINOTask(detection.DetectionTask):
         giou_loss += layer_giou_loss
 
       # compute intermediate loss
-      layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(
-        outputs=interm_out, labels=labels, aux_losses=model.losses)
-      loss += layer_loss * self._task_config.losses.coef_interm
-      cls_loss += layer_cls_loss * self._task_config.losses.coef_interm
-      box_loss += layer_box_loss * self._task_config.losses.coef_interm
-      giou_loss += layer_giou_loss * self._task_config.losses.coef_interm
+      if self._task_config.model.two_stage:
+        layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(
+          outputs=interm_out, labels=labels, aux_losses=model.losses)
+        loss += layer_loss * self._task_config.losses.coef_interm
+        cls_loss += layer_cls_loss * self._task_config.losses.coef_interm
+        box_loss += layer_box_loss * self._task_config.losses.coef_interm
+        giou_loss += layer_giou_loss * self._task_config.losses.coef_interm
 
       # Consider moving scaling logic from build_losses to here.
       scaled_loss = loss

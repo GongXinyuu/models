@@ -150,6 +150,7 @@ class DINO(tf.keras.Model):
                two_stage=True,
                conditional_query=False,
                use_detached_boxes_dec_out=False,  # look forward twice = False
+               learnable_tgt_init=True,
                **kwargs):
     super().__init__(**kwargs)
     assert query_dim in [2, 4]
@@ -174,6 +175,7 @@ class DINO(tf.keras.Model):
     self._activation = activation
     self._conditional_query = conditional_query
     self._use_detached_boxes_dec_out = use_detached_boxes_dec_out
+    self._learnable_tgt_init = learnable_tgt_init
 
   def build(self, input_shape=None):
     self._input_proj = tf.keras.layers.Conv2D(
@@ -197,7 +199,8 @@ class DINO(tf.keras.Model):
         conditional_query=self._conditional_query,
         use_detached_boxes_dec_out=self._use_detached_boxes_dec_out,
         activation=self._activation,
-        focal_loss=self._focal_loss)
+        focal_loss=self._focal_loss,
+        learnable_tgt_init=self._learnable_tgt_init)
 
     if not self._two_stage:
       self.refpoint_embed = self.add_weight(
@@ -324,7 +327,7 @@ class DINOTransformer(tf.keras.layers.Layer):
                num_patterns=0, modulate_hw_attn=True,
                two_stage=True, two_stage_learn_wh=False, num_queries=100,
                conditional_query=False, use_detached_boxes_dec_out=False,
-               activation='relu', focal_loss=False, **kwargs):
+               activation='relu', focal_loss=False, learnable_tgt_init=True, **kwargs):
     super().__init__(**kwargs)
 
     self._num_classes = num_classes
@@ -341,6 +344,7 @@ class DINOTransformer(tf.keras.layers.Layer):
     self._num_queries = num_queries
     self._conditional_query = conditional_query
     self._use_detached_boxes_dec_out = use_detached_boxes_dec_out
+    self._learnable_tgt_init = learnable_tgt_init
 
   def build(self, input_shape=None):
     pos_embed_tensor_shape = tf.TensorShape(input_shape['pos_embed'])
@@ -391,14 +395,14 @@ class DINOTransformer(tf.keras.layers.Layer):
         bias_initializer=transformer_dino.FocalBiasInitializer(prior_prob=0.01)
         if self._focal_loss else transformer_dino.FanInBiasInitializer(),
         name="dino/enc_out_cls_dense")
-      self.tgt_embed = None
     else:
-      self.tgt_embed = self.add_weight(
-        "dino/tgt_embeddings",
-        shape=[self._num_queries, self._hidden_size],
-        initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
-        dtype=tf.float32
-      )
+      if self._learnable_tgt_init:
+        self.tgt_embed = self.add_weight(
+          "dino/tgt_embeddings",
+          shape=[self._num_queries, self._hidden_size],
+          initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
+          dtype=tf.float32
+        )
 
     super().build(input_shape)
 
@@ -460,8 +464,11 @@ class DINOTransformer(tf.keras.layers.Layer):
       target_shape = tf.shape(refpoint_embed)
 
       bs = target_shape[0]
-      tgt = tf.tile(tf.expand_dims(self.tgt_embed, axis=0),
-                            (bs, 1, 1))  # bs, num_queries, query_dim
+      if self._learnable_tgt_init:
+        tgt = tf.tile(tf.expand_dims(self.tgt_embed, axis=0),
+                              (bs, 1, 1))  # bs, num_queries, query_dim
+      else:
+        tgt = tf.zeros((bs, self._num_queries, self._hidden_size))
       init_box_proposal = tf.math.sigmoid(refpoint_embed)
 
     cross_attention_mask = tf.tile(

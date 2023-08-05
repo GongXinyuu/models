@@ -89,6 +89,7 @@ class Dino(hyperparams.Config):
   two_stage: bool = True
   conditional_query: bool = False
   use_detached_boxes_dec_out: bool = False  # look forward once
+  learnable_tgt_init: bool = True
 
 @dataclasses.dataclass
 class DinoTask(cfg.TaskConfig):
