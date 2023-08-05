@@ -24,6 +24,7 @@ from official.projects.detr.tasks import detection
 from official.vision.modeling import backbones
 from official.vision.ops import box_ops
 from official.vision.losses import focal_loss
+from official.vision.evaluation import coco_evaluator
 
 
 @task_factory.register_task_cls(dino_cfg.DinoTask)
@@ -212,6 +213,23 @@ class DINOTask(detection.DetectionTask):
 
     total_loss = cls_loss + box_loss + giou_loss + aux_losses
     return total_loss, cls_loss, box_loss, giou_loss
+
+  def build_metrics(self, training=True):
+    """Builds detection metrics."""
+    metrics = []
+    metric_names = ['cls_loss', 'box_loss', 'giou_loss']
+    if self._task_config.model.two_stage:
+      metric_names.extend(['interm_loss', 'interm_cls_loss', 'interm_box_loss', 'interm_giou_loss'])
+    for name in metric_names:
+      metrics.append(tf.keras.metrics.Mean(name, dtype=tf.float32))
+
+    if not training:
+      self.coco_metric = coco_evaluator.COCOEvaluator(
+          annotation_file=self._task_config.annotation_file,
+          include_mask=False,
+          need_rescale_bboxes=True,
+          per_category_metrics=self._task_config.per_category_metrics)
+    return metrics
 
   def train_step(self, inputs, model, optimizer, metrics=None):
     """Does forward and backward.
