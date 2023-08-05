@@ -245,13 +245,16 @@ class DINOTask(detection.DetectionTask):
         giou_loss += layer_giou_loss
 
       # compute intermediate loss
+      interm_cls_loss = 0.0
+      interm_box_loss = 0.0
+      interm_giou_loss = 0.0
       if self._task_config.model.two_stage:
         layer_loss, layer_cls_loss, layer_box_loss, layer_giou_loss = self.build_losses(
           outputs=interm_out, labels=labels, aux_losses=model.losses)
         loss += layer_loss * self._task_config.losses.coef_interm
-        cls_loss += layer_cls_loss * self._task_config.losses.coef_interm
-        box_loss += layer_box_loss * self._task_config.losses.coef_interm
-        giou_loss += layer_giou_loss * self._task_config.losses.coef_interm
+        interm_cls_loss += layer_cls_loss * self._task_config.losses.coef_interm
+        interm_box_loss += layer_box_loss * self._task_config.losses.coef_interm
+        interm_giou_loss += layer_giou_loss * self._task_config.losses.coef_interm
 
       # Consider moving scaling logic from build_losses to here.
       scaled_loss = loss
@@ -284,6 +287,9 @@ class DINOTask(detection.DetectionTask):
         'cls_loss': cls_loss,
         'box_loss': box_loss,
         'giou_loss': giou_loss,
+        'interm_cls_loss': interm_cls_loss,
+        'interm_box_loss': interm_box_loss,
+        'interm_giou_loss': interm_giou_loss,
     }
 
     # Metric results will be added to logs for you.
