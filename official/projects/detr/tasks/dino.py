@@ -218,7 +218,7 @@ class DINOTask(detection.DetectionTask):
     """Builds detection metrics."""
     metrics = []
     metric_names = ['cls_loss', 'box_loss', 'giou_loss']
-    if self._task_config.model.two_stage:
+    if training and self._task_config.model.two_stage:
       metric_names.extend(['interm_loss', 'interm_cls_loss', 'interm_box_loss', 'interm_giou_loss'])
     for name in metric_names:
       metrics.append(tf.keras.metrics.Mean(name, dtype=tf.float32))

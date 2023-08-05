@@ -81,6 +81,7 @@ class DinoTest(tf.test.TestCase):
       model = task.build_model()
       dataset = task.build_inputs(config.train_data)
       iterator = iter(dataset)
+      metrics = task.build_metrics(training=True)
       opt_cfg = optimization.OptimizationConfig({
           'optimizer': {
               'type': 'detr_adamw',
@@ -98,7 +99,7 @@ class DinoTest(tf.test.TestCase):
           },
       })
       optimizer = detection.DINOTask.create_optimizer(opt_cfg)
-      task.train_step(next(iterator), model, optimizer)
+      task.train_step(next(iterator), model, optimizer, metrics)
 
   def test_validation_step(self):
     config = dino_cfg.DinoTask(
@@ -154,6 +155,7 @@ class DetectionTFDSTest(tf.test.TestCase):
       model = task.build_model()
       dataset = task.build_inputs(config.train_data)
       iterator = iter(dataset)
+      metrics = task.build_metrics(training=True)
       opt_cfg = optimization.OptimizationConfig({
           'optimizer': {
               'type': 'detr_adamw',
@@ -171,7 +173,7 @@ class DetectionTFDSTest(tf.test.TestCase):
           },
       })
       optimizer = detection.DINOTask.create_optimizer(opt_cfg)
-      task.train_step(next(iterator), model, optimizer)
+      task.train_step(next(iterator), model, optimizer, metrics)
 
   def test_validation_step(self):
     config = dino_cfg.DinoTask(
